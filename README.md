@@ -57,10 +57,13 @@ The model consists of:
    git clone https://github.com/yourusername/intelligent-trading-model.git
    cd intelligent-trading-model
    ```
-Install Dependencies:
-pip install -r requirements.txt
-Prepare the Configuration: Edit config.json to specify your desired parameters.
-Prepare Historical Data: Use a script (e.g., fetch_binance_data.py) to collect market data and save it as a CSV file.
+2. Install Dependencies:
+   ```bash
+   pip install -r requirements.txt
+   ```
+4. Prepare the Configuration: Edit config.json to specify your desired parameters.
+5. Prepare Historical Data: Use a script (e.g., fetch_binance_data.py) to collect market data and save it as a CSV file.
+
 Usage
 
 Run Training:
