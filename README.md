@@ -1,77 +1,95 @@
-# Binance Historical Data Fetcher
+# Intelligent Trading Model
 
-This script fetches historical candlestick (OHLCV) data for a specified cryptocurrency trading pair from the Binance API. The data is saved as a CSV file for further analysis or use.
+This project implements a deep learning-based trading model designed to analyze historical financial market data and optimize trading strategies. Using neural networks, the model predicts price movements and adjusts trading parameters dynamically for better risk management and profitability.
+
+---
 
 ## Features
 
-- Fetches historical data for a specific symbol and interval.
-- Handles large date ranges by splitting requests into smaller chunks.
-- Saves data in a clean and readable CSV format.
-- Includes necessary columns like open, high, low, close, and volume.
+- **Historical Data Analysis**: Utilizes technical indicators such as ATR, RSI, and SMA.
+- **Custom Loss Function**: Includes classification errors, parameter penalties, and balance rewards.
+- **Trainable Parameters**: Automatically adjusts thresholds, risks, and profit/loss ratios.
+- **Simulated Trading**: Conducts virtual trades to assess model performance.
+- **Detailed Reports**: Logs every decision and trade for analysis.
 
-## Requirements
+---
 
-- Python 3.7 or higher
-- `pandas` library
-- `requests` library
+## How It Works
+
+### 1. **Configuration**
+The model parameters are defined in the `config.json` file:
+- `window_size`: Number of data points in a sequence.
+- `num_features`: Features per data point (e.g., `high`, `low`, `close`, etc.).
+- `model_name`: File name for saving and loading the model.
+- `data_file`: CSV file containing historical data.
+- `initial_balance`, `trade_risk`, `min_balance`, etc.: Parameters for simulated trading.
+
+### 2. **Data Preparation**
+The model processes historical market data:
+- **Calculate Indicators**: Computes ATR, RSI, and SMAs.
+- **Normalization**: Scales data to the [0, 1] range for efficient model training.
+- **Sequence Slicing**: Creates overlapping windows of historical data for input to the model.
+
+### 3. **Model Architecture**
+The model consists of:
+- **Conv1D**: Extracts local patterns in sequences.
+- **LSTM**: Captures temporal dependencies.
+- **Dense Layer**: Combines features for final prediction.
+- **Trainable Parameters**:
+  - `long_threshold` and `short_threshold`: Define trading signals.
+  - `trade_risk`, `take_profit_ratio`, `stop_loss_ratio`: Optimize trading decisions.
+
+### 4. **Training**
+- **Custom Loss Function**: Combines classification loss, parameter regularization, and balance rewards.
+- **Simulation**: Predicts market movements, adjusts balances, and logs trades.
+- **Dynamic Updates**: Adapts trading parameters during training for market conditions.
+
+### 5. **Reports**
+- **Detailed Report** (`detailed_report_file`): Logs individual trades, balances, thresholds, and outcomes.
+- **Summary Report** (`report_file`): Tracks overall performance metrics, such as success rates and total trades.
+
+---
 
 ## Installation
 
-1. Clone this repository:
+1. **Clone the Repository**:
    ```bash
-   git clone https://github.com/yourusername/binance-historical-fetcher.git
-   cd binance-historical-fetcher
+   git clone https://github.com/yourusername/intelligent-trading-model.git
+   cd intelligent-trading-model
    ```
-Install the required Python packages:
-pip install pandas requests
-Configuration
-
-Before running the script, you can customize the following parameters directly in the script:
-
-symbol: The trading pair to fetch data for (e.g., "BNBUSDT").
-interval: The candlestick interval (e.g., "4h" for 4-hour intervals).
-start_date: Start date for data collection (e.g., "2014-01-01").
-end_date: End date for data collection (e.g., "2024-09-30").
-output_file: Name of the output CSV file (e.g., "historical_data_4h_bnb.csv").
+Install Dependencies:
+pip install -r requirements.txt
+Prepare the Configuration: Edit config.json to specify your desired parameters.
+Prepare Historical Data: Use a script (e.g., fetch_binance_data.py) to collect market data and save it as a CSV file.
 Usage
 
-Run the script using Python:
-python fetch_binance_data.py
-After successful execution, the script saves the historical data in the specified CSV file (default: historical_data_4h_bnb.csv).
-Output Format
+Run Training:
+python train_model.py
+Monitor Logs: Check progress in detailed_report_file and report_file.
+Analyze Results: Evaluate the model's decisions and performance using the generated reports.
+Output
 
-The output CSV file includes the following columns:
+Reports
+Detailed Report: Captures individual trade metrics, including timestamps, thresholds, positions, and balances.
+Summary Report: Aggregates metrics like total trades, success rates, and final balance.
+Model
+The trained model is saved to a file (model_name), enabling future reuse or fine-tuning.
 
-timestamp: The start time of the candlestick (UTC).
-open: Opening price.
-high: Highest price.
-low: Lowest price.
-close: Closing price.
-volume: Total trading volume during the interval.
-Example
+Example Workflow
 
-If you configure the script as follows:
-  ```bash
-  symbol = "BNBUSDT"
-  interval = "4h"
-  start_date = "2020-01-01"
-  end_date = "2023-12-31"
-  ```
-The script will fetch all 4-hour candlestick data for the BNB/USDT trading pair from January 1, 2020, to December 31, 2023, and save it to historical_data_4h_bnb.csv.
+Collect 4-hour historical data for BNB/USDT using Binance API.
+Configure the model with window_size = 100 and num_features = 7.
+Train the model using the script.
+Analyze trading performance using the reports.
+Key Advantages
 
-Notes
-
-The Binance API limits requests to 1000 candlesticks per call. The script automatically handles this by paginating requests.
-A small delay (0.1 seconds) is added between requests to avoid exceeding Binance's rate limits.
-Ensure your internet connection is stable during data fetching, as the process may take time for large date ranges.
-Troubleshooting
-
-Empty or incomplete CSV file: Check if the API response is empty or if rate limits are being hit. Adjust the time.sleep delay if necessary.
-Connection errors: Ensure that you have a stable internet connection. Retry running the script if needed.
+Automation: End-to-end pipeline from data ingestion to trading simulation.
+Dynamic Learning: Adapts thresholds and parameters for evolving market conditions.
+Comprehensive Reporting: Provides deep insights into trading strategy effectiveness.
 License
 
 This project is licensed under the MIT License. See the LICENSE file for details.
 
 Author
 
-Developed by Ktyby21. Feel free to contact me for questions or suggestions.
+Developed by Ktyby21. Feel free to contact me for suggestions or collaboration opportunities.
