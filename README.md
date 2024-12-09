@@ -67,25 +67,30 @@ Run Training:
 python train_model.py
 Monitor Logs: Check progress in detailed_report_file and report_file.
 Analyze Results: Evaluate the model's decisions and performance using the generated reports.
+
 Output
 
-Reports
-Detailed Report: Captures individual trade metrics, including timestamps, thresholds, positions, and balances.
-Summary Report: Aggregates metrics like total trades, success rates, and final balance.
+- Reports
+- Detailed Report: Captures individual trade metrics, including timestamps, thresholds, positions, and balances.
+- Summary Report: Aggregates metrics like total trades, success rates, and final balance.
+
 Model
 The trained model is saved to a file (model_name), enabling future reuse or fine-tuning.
 
 Example Workflow
 
-Collect 4-hour historical data for BNB/USDT using Binance API.
-Configure the model with window_size = 100 and num_features = 7.
-Train the model using the script.
-Analyze trading performance using the reports.
+- Collect 4-hour historical data for BNB/USDT using Binance API.
+- Configure the model with window_size = 100 and num_features = 7.
+- Train the model using the script.
+- Analyze trading performance using the reports.
+
+  
 Key Advantages
 
-Automation: End-to-end pipeline from data ingestion to trading simulation.
-Dynamic Learning: Adapts thresholds and parameters for evolving market conditions.
-Comprehensive Reporting: Provides deep insights into trading strategy effectiveness.
+- Automation: End-to-end pipeline from data ingestion to trading simulation.
+- Dynamic Learning: Adapts thresholds and parameters for evolving market conditions.
+- Comprehensive Reporting: Provides deep insights into trading strategy effectiveness.
+
 License
 
 This project is licensed under the MIT License. See the LICENSE file for details.
