@@ -1,6 +1,19 @@
 # Intelligent Trading Model
 
-This project implements a deep learning-based trading model designed to analyze historical financial market data and optimize trading strategies. Using neural networks, the model predicts price movements and adjusts trading parameters dynamically for better risk management and profitability.
+This repository demonstrates how to use Reinforcement Learning (with Stable Baselines3 and Gym) for automated trading on hourly candlestick data. The project consists of:
+
+  - A custom Gym environment (environment.py) that simulates trading with:
+        Multi-bar holding (positions can stay open across multiple time steps).
+        Built-in Stop-Loss and Take-Profit checks inside each candle.
+        Commission and slippage modeling.
+        Partial position closing (to support scaling out of positions).
+        Logging each trade for later analysis.
+
+   - A training script (train_rl.py) that:
+        Loads real historical data from a CSV file (historical_data_1h.csv).
+        Creates and wraps the environment.
+        Trains a PPO agent.
+        Runs a quick test and prints final results.
 
 ---
 
