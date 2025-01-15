@@ -1,26 +1,26 @@
 # Intelligent Trading Model
 
-This repository demonstrates how to use Reinforcement Learning (with Stable Baselines3 and Gym) for automated trading on hourly candlestick data. The project consists of:
+This repository demonstrates how to train a reinforcement learning (RL) agent using [Stable-Baselines3](https://github.com/DLR-RM/stable-baselines3) for trading on hourly candlestick data. The project consists of:
 
-  - A custom Gym environment (environment.py) that simulates trading with:
-        Multi-bar holding (positions can stay open across multiple time steps).
-        Built-in Stop-Loss and Take-Profit checks inside each candle.
-        Commission and slippage modeling.
-        Partial position closing (to support scaling out of positions).
-        Logging each trade for later analysis.
+- A custom Gymnasium environment (**environment.py**) that simulates trading with:
+  - Multi-bar holding (positions can stay open across multiple time steps).
+  - Stop-Loss and Take-Profit checks at each bar.
+  - Commission and slippage modeling.
+  - Partial position closing (to support scaling out of positions).
+  - Detailed logging of each trade for analysis.
 
-   - A training script (train_rl.py) that:
-        Loads real historical data from a CSV file (historical_data_1h.csv).
-        Creates and wraps the environment.
-        Trains a PPO agent.
-        Runs a quick test and prints final results.
+- A training script (**train_rl.py**) that:
+  - Loads real historical data from a CSV file (`historical_data_1h.csv`).
+  - Creates and wraps the environment.
+  - Trains a PPO agent.
+  - Runs a quick test and prints final results.
 
 ---
 
 ## Features
 
 - **Historical Data Analysis**: Utilizes technical indicators such as ATR, RSI, and SMA.
-- **Custom Loss Function**: Includes classification errors, parameter penalties, and balance rewards.
+- **Custom Loss Function**: Balances classification errors, parameter penalties, and balance rewards.
 - **Trainable Parameters**: Automatically adjusts thresholds, risks, and profit/loss ratios.
 - **Simulated Trading**: Conducts virtual trades to assess model performance.
 - **Detailed Reports**: Logs every decision and trade for analysis.
@@ -30,7 +30,7 @@ This repository demonstrates how to use Reinforcement Learning (with Stable Base
 ## How It Works
 
 ### 1. **Configuration**
-The model parameters are defined in the `config.json` file:
+The model parameters are defined in `config.json`:
 - `window_size`: Number of data points in a sequence.
 - `num_features`: Features per data point (e.g., `high`, `low`, `close`, etc.).
 - `model_name`: File name for saving and loading the model.
@@ -58,8 +58,8 @@ The model consists of:
 - **Dynamic Updates**: Adapts trading parameters during training for market conditions.
 
 ### 5. **Reports**
-- **Detailed Report** (`detailed_report_file`): Logs individual trades, balances, thresholds, and outcomes.
-- **Summary Report** (`report_file`): Tracks overall performance metrics, such as success rates and total trades.
+- **Detailed Report**: Logs individual trades, balances, thresholds, and outcomes.
+- **Summary Report**: Tracks overall performance metrics, such as success rates and total trades.
 
 ---
 
@@ -70,47 +70,68 @@ The model consists of:
    git clone https://github.com/yourusername/intelligent-trading-model.git
    cd intelligent-trading-model
    ```
-2. Install Dependencies:
+2. **Install Dependencies**:
    ```bash
    pip install -r requirements.txt
    ```
-4. Prepare the Configuration: Edit config.json to specify your desired parameters.
-5. Prepare Historical Data: Use a script (e.g., fetch_binance_data.py) to collect market data and save it as a CSV file.
+3. **Prepare the Configuration**: Edit `config.json` to specify your desired parameters.
+4. **Prepare Historical Data**: Ensure you have a CSV file (`historical_data_1h.csv`) with the required columns: `open`, `high`, `low`, `close`, `volume`.
 
-Usage
+---
 
-Run Training:
-python train_model.py
-Monitor Logs: Check progress in detailed_report_file and report_file.
-Analyze Results: Evaluate the model's decisions and performance using the generated reports.
+## Usage
 
-Output
+### Run Training
+```bash
+python train_rl.py
+```
 
-- Reports
-- Detailed Report: Captures individual trade metrics, including timestamps, thresholds, positions, and balances.
-- Summary Report: Aggregates metrics like total trades, success rates, and final balance.
+- If `ppo_hourly_model.zip` is found, training continues from the saved weights.
+- Otherwise, a new model is created and trained.
 
-Model
-The trained model is saved to a file (model_name), enabling future reuse or fine-tuning.
+### Monitor Logs
+- Check training progress in the console or via TensorBoard:
+  ```bash
+  tensorboard --logdir ./tensorboard_logs/
+  ```
 
-Example Workflow
+### Analyze Results
+- Evaluate the model's decisions and performance using the generated reports (`detailed_report_file` and `report_file`).
 
-- Collect 4-hour historical data for BNB/USDT using Binance API.
-- Configure the model with window_size = 100 and num_features = 7.
-- Train the model using the script.
-- Analyze trading performance using the reports.
+---
 
-  
-Key Advantages
+## Output
 
-- Automation: End-to-end pipeline from data ingestion to trading simulation.
-- Dynamic Learning: Adapts thresholds and parameters for evolving market conditions.
-- Comprehensive Reporting: Provides deep insights into trading strategy effectiveness.
+- **Trained Model**: Saved to `ppo_hourly_model.zip` for future use.
+- **Reports**:
+  - **Detailed Report**: Logs individual trade metrics, including timestamps, thresholds, positions, and balances.
+  - **Summary Report**: Aggregates metrics like total trades, success rates, and final balance.
 
-License
+---
+
+## Example Workflow
+
+1. Collect hourly historical data for a trading pair (e.g., BTC/USDT) using an API or CSV file.
+2. Configure the model with `window_size = 168` and `num_features = 5`.
+3. Train the model using `train_rl.py`.
+4. Analyze trading performance using the detailed and summary reports.
+
+---
+
+## Key Advantages
+
+- **Automation**: End-to-end pipeline from data ingestion to trading simulation.
+- **Dynamic Learning**: Adapts thresholds and parameters for evolving market conditions.
+- **Comprehensive Reporting**: Provides deep insights into trading strategy effectiveness.
+
+---
+
+## License
 
 This project is licensed under the MIT License. See the LICENSE file for details.
 
-Author
+---
+
+## Author
 
 Developed by Ktyby21. Feel free to contact me for suggestions or collaboration opportunities.
