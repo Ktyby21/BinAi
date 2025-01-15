@@ -3,4 +3,4 @@ tensorboard_logs/
 __pycache__/
 ppo_hourly_model.zip
 *.csv
-.DS_Store
+*.DS_Store
