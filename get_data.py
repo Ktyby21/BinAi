@@ -5,7 +5,7 @@ import time
 
 # Specify parameters
 symbol = "BTCUSDT"
-interval = "1h"  # 4-hour interval
+interval = "5m"  # 4-hour interval
 start_date = "2022-01-01"  # start date for data collection
 end_date = "2025-01-15"    # end date for data collection
 output_file = "historical_data_1h.csv"

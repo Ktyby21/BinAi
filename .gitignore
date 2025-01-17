@@ -4,3 +4,5 @@ __pycache__/
 ppo_hourly_model.zip
 *.csv
 *.DS_Store
+test.py
+*.log
