@@ -117,7 +117,7 @@ def main():
     while True:
         current_time = datetime.utcnow()
 
-        # Проверяем, прошло ли 60 минут с последнего дообучения
+        # Проверяем, прошло ли 24 часа с последнего дообучения
         if (current_time - last_retrain_time).total_seconds() >= 24 * 3600:
             logging.info("Начало дообучения модели.")
             model.learn(total_timesteps=config["learn_timesteps"])
