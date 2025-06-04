@@ -251,16 +251,14 @@ class HourlyTradingEnv(gym.Env):
                 if l <= trade.stop_loss:
                     exec_price = trade.stop_loss * (1.0 - self.slippage_rate)
                     trade.close(bar_idx, exec_price)
-                    fee = (abs(trade.entry_price * trade.size_in_coins) +
-                           abs(exec_price * trade.size_in_coins)) * self.commission_rate
+                    fee = abs(exec_price * trade.size_in_coins) * self.commission_rate
                     trade.pnl -= fee
                     self.balance += trade.pnl
                     closed_trades.append(trade)
                 elif h >= trade.take_profit:
                     exec_price = trade.take_profit * (1.0 - self.slippage_rate)
                     trade.close(bar_idx, exec_price)
-                    fee = (abs(trade.entry_price * trade.size_in_coins) +
-                           abs(exec_price * trade.size_in_coins)) * self.commission_rate
+                    fee = abs(exec_price * trade.size_in_coins) * self.commission_rate
                     trade.pnl -= fee
                     self.balance += trade.pnl
                     closed_trades.append(trade)
@@ -269,16 +267,14 @@ class HourlyTradingEnv(gym.Env):
                 if h >= trade.stop_loss:
                     exec_price = trade.stop_loss * (1.0 + self.slippage_rate)
                     trade.close(bar_idx, exec_price)
-                    fee = (abs(trade.entry_price * trade.size_in_coins) +
-                           abs(exec_price * trade.size_in_coins)) * self.commission_rate
+                    fee = abs(exec_price * trade.size_in_coins) * self.commission_rate
                     trade.pnl -= fee
                     self.balance += trade.pnl
                     closed_trades.append(trade)
                 elif l <= trade.take_profit:
                     exec_price = trade.take_profit * (1.0 + self.slippage_rate)
                     trade.close(bar_idx, exec_price)
-                    fee = (abs(trade.entry_price * trade.size_in_coins) +
-                           abs(exec_price * trade.size_in_coins)) * self.commission_rate
+                    fee = abs(exec_price * trade.size_in_coins) * self.commission_rate
                     trade.pnl -= fee
                     self.balance += trade.pnl
                     closed_trades.append(trade)
@@ -299,8 +295,7 @@ class HourlyTradingEnv(gym.Env):
                     exec_price = c * (1.0 + self.slippage_rate)
                     partial_pnl = (trade.entry_price - exec_price) * abs(coins_to_close)
 
-                fee = (abs(trade.entry_price * coins_to_close) +
-                       abs(exec_price * coins_to_close)) * self.commission_rate
+                fee = abs(exec_price * coins_to_close) * self.commission_rate
                 partial_pnl -= fee
 
                 self.balance += partial_pnl
@@ -410,8 +405,7 @@ class HourlyTradingEnv(gym.Env):
                     else:
                         exec_price = c_price * (1.0 + self.slippage_rate)
                     trade.close(self.current_bar, exec_price)
-                    fee = (abs(trade.entry_price * trade.size_in_coins) +
-                           abs(exec_price * trade.size_in_coins)) * self.commission_rate
+                    fee = abs(exec_price * trade.size_in_coins) * self.commission_rate
                     trade.pnl -= fee
                     additional_pnl += trade.pnl
                     trade.closed = True
