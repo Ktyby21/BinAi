@@ -201,8 +201,8 @@ class HourlyTradingEnv(gym.Env):
             # fallback to just start = window_size
             self.start_bar = self.window_size
         else:
-            # pick random start
-            self.start_bar = self.np_random.integers(low=min_start, high=max_start)
+            # pick random start (high is exclusive, so add 1 to include max_start)
+            self.start_bar = self.np_random.integers(low=min_start, high=max_start + 1)
 
         # 2) Now set current_bar at start_bar
         self.current_bar = self.start_bar
@@ -415,7 +415,6 @@ class HourlyTradingEnv(gym.Env):
                     trade.pnl -= fee
                     additional_pnl += trade.pnl
                     trade.closed = True
-                    self.trade_log.append(trade)
                     forced_close_count += 1
                     print(f"[DEBUG] ForceClosed trade: {trade}")
 

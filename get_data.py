@@ -5,7 +5,7 @@ import time
 
 # Specify parameters
 symbol = "BTCUSDT"
-interval = "5m"  # 4-hour interval
+interval = "5m"  # 5-minute interval
 start_date = "2022-01-01"  # start date for data collection
 end_date = "2025-01-15"    # end date for data collection
 output_file = "historical_data_1h.csv"
@@ -40,8 +40,8 @@ while start_time < end_time:
         break
     all_data.extend(data)
     
-    # Update start_time for the next request
-    start_time = data[-1][0] + (1 * 60 * 60 * 1000)  # move forward by 4 hours
+    # Update start_time for the next request (advance by one interval)
+    start_time = data[-1][0] + (5 * 60 * 1000)
     time.sleep(0.1)  # delay to avoid API rate limits
 
 # Convert data to a DataFrame and save to CSV
@@ -55,4 +55,4 @@ df["timestamp"] = pd.to_datetime(df["timestamp"], unit="ms")  # convert timestam
 # Keep only the required columns
 df = df[["timestamp", "open", "high", "low", "close", "volume"]]
 df.to_csv(output_file, index=False)
-print(f"Historical 4-hour data has been saved to {output_file}")
+print(f"Historical 5-minute data has been saved to {output_file}")

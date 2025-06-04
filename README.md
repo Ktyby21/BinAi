@@ -19,11 +19,10 @@ This repository demonstrates how to train a reinforcement learning (RL) agent us
 
 ## Features
 
-- **Historical Data Analysis**: Utilizes technical indicators such as ATR, RSI, and SMA.
-- **Custom Loss Function**: Balances classification errors, parameter penalties, and balance rewards.
-- **Trainable Parameters**: Automatically adjusts thresholds, risks, and profit/loss ratios.
-- **Simulated Trading**: Conducts virtual trades to assess model performance.
-- **Detailed Reports**: Logs every decision and trade for analysis.
+- **ATR-based Stop Loss and Take Profit** for risk management.
+- **Partial Position Closing** to scale out of trades.
+- **Simulated Trading** with commission and slippage modelling.
+- **Detailed Trade Logging** for analysis.
 
 ---
 
@@ -39,25 +38,15 @@ The model parameters are defined in `config.json`:
 
 ### 2. **Data Preparation**
 The model processes historical market data:
-- **Calculate Indicators**: Computes ATR, RSI, and SMAs.
-- **Normalization**: Scales data to the [0, 1] range for efficient model training.
-- **Sequence Slicing**: Creates overlapping windows of historical data for input to the model.
+- **Calculate Indicators**: Computes ATR for each bar.
+- **Normalization**: Scales data for efficient training.
+- **Sequence Slicing**: Creates windows of historical data for input to the agent.
 
-### 3. **Model Architecture**
-The model consists of:
-- **Conv1D**: Extracts local patterns in sequences.
-- **LSTM**: Captures temporal dependencies.
-- **Dense Layer**: Combines features for final prediction.
-- **Trainable Parameters**:
-  - `long_threshold` and `short_threshold`: Define trading signals.
-  - `trade_risk`, `take_profit_ratio`, `stop_loss_ratio`: Optimize trading decisions.
+### 3. **Training**
+- Uses the PPO algorithm from Stable-Baselines3.
+- Simulates trades, updates balances and logs results.
 
-### 4. **Training**
-- **Custom Loss Function**: Combines classification loss, parameter regularization, and balance rewards.
-- **Simulation**: Predicts market movements, adjusts balances, and logs trades.
-- **Dynamic Updates**: Adapts trading parameters during training for market conditions.
-
-### 5. **Reports**
+### 4. **Reports**
 - **Detailed Report**: Logs individual trades, balances, thresholds, and outcomes.
 - **Summary Report**: Tracks overall performance metrics, such as success rates and total trades.
 
