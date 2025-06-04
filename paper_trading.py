@@ -114,6 +114,8 @@ def main():
     # Переменная для отслеживания времени последнего дообучения
     last_retrain_time = datetime.utcnow()
 
+    obs, _ = env.reset()
+
     while True:
         current_time = datetime.utcnow()
 
@@ -128,10 +130,9 @@ def main():
         df = update_market_data(df)
         env.df = df
 
-        obs, _ = env.reset()
         action, _ = model.predict(obs, deterministic=True)
         logging.info(f"Predicted action: {action}")
-        
+
         obs, reward, terminated, truncated, info = env.step(action)
         logging.info(f"Reward: {reward}, Balance: {env.balance}")
 
