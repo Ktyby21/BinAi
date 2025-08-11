@@ -7,7 +7,7 @@ import csv, os
 from datetime import datetime, timedelta
 from binance import Client
 from stable_baselines3 import PPO
-from environment import HourlyTradingEnv
+from env.hourly_trading_env import HourlyTradingEnv
 
 # Загрузка конфигурации из JSON
 with open("config.json", "r") as f:
