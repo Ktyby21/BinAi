@@ -15,7 +15,7 @@ import json
 import pandas as pd
 from stable_baselines3 import PPO
 from stable_baselines3.common.vec_env import DummyVecEnv
-from environment import HourlyTradingEnv
+from env.hourly_trading_env import HourlyTradingEnv
 
 # Загрузка конфигурации из JSON
 with open("config.json", "r") as f:

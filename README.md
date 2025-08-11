@@ -2,7 +2,7 @@
 
 This repository demonstrates how to train a reinforcement learning (RL) agent using [Stable-Baselines3](https://github.com/DLR-RM/stable-baselines3) for trading on hourly candlestick data. The project consists of:
 
-- A custom Gymnasium environment (**environment.py**) that simulates trading with:
+- A custom Gymnasium environment (**env/hourly_trading_env.py**) that simulates trading with:
   - Multi-bar holding (positions can stay open across multiple time steps).
   - Stop-Loss and Take-Profit checks at each bar.
   - Commission and slippage modeling.
@@ -31,10 +31,10 @@ This repository demonstrates how to train a reinforcement learning (RL) agent us
 ### 1. **Configuration**
 The model parameters are defined in `config.json`:
 - `window_size`: Number of data points in a sequence.
-- `num_features`: Features per data point (e.g., `high`, `low`, `close`, etc.).
 - `model_name`: File name for saving and loading the model.
 - `data_file`: CSV file containing historical data.
 - `initial_balance`, `trade_risk`, `min_balance`, etc.: Parameters for simulated trading.
+- `data_top_n`, `data_interval`, `data_start_date`, `data_end_date`, `data_output_file`: Parameters for downloading market history for the most traded pairs.
 
 ### 2. **Data Preparation**
 The model processes historical market data:
@@ -100,8 +100,8 @@ python train_rl.py
 
 ## Example Workflow
 
-1. Collect hourly historical data for a trading pair (e.g., BTC/USDT) using an API or CSV file.
-2. Configure the model with `window_size = 168` and `num_features = 5`.
+1. Collect hourly historical data for a trading pair (e.g., BTC/USDT) or use `get_data.py` to download top trading pairs from Binance.
+2. Configure the model with `window_size = 168`.
 3. Train the model using `train_rl.py`.
 4. Analyze trading performance using the detailed and summary reports.
 

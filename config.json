@@ -15,5 +15,10 @@
   "consecutive_no_trade_allowed": 10,
   "train_timesteps": 500000,
   "learn_timesteps": 10000,
-  "logging_level": "INFO"
+  "logging_level": "INFO",
+  "data_top_n": 100,
+  "data_interval": "1h",
+  "data_start_date": "2022-01-01",
+  "data_end_date": "2025-01-15",
+  "data_output_file": "top_pairs_1h.csv"
 }
