@@ -2,7 +2,8 @@
 HourlyTradingEnv
 
 A custom Gymnasium environment simulating trading on hourly candlesticks.
-Observation consists only of current balance.
+Observation includes equity ratio along with several dynamically
+normalized market indicators.
 """
 import numpy as np
 import pandas as pd
@@ -25,7 +26,10 @@ class HourlyTradingEnv(gym.Env):
         reward_scaling: float = 1.0,
         penalize_no_trade_steps: bool = True,
         no_trade_penalty: float = 0.1,
-        consecutive_no_trade_allowed: int = 10
+        consecutive_no_trade_allowed: int = 10,
+        ma_short_window: int = 24,
+        ma_long_window: int = 168,
+        vol_ma_window: int = 24,
     ):
         super().__init__()
 
@@ -46,6 +50,17 @@ class HourlyTradingEnv(gym.Env):
         self.df['hl_range'] = self.df['high'] - self.df['low']
         self.df['atr'] = self.df['hl_range'].rolling(14).mean().bfill()
 
+        # Moving averages for dynamic features
+        self.df['ma_short'] = (
+            self.df['close'].rolling(ma_short_window).mean().bfill()
+        )
+        self.df['ma_long'] = (
+            self.df['close'].rolling(ma_long_window).mean().bfill()
+        )
+        self.df['vol_ma'] = (
+            self.df['volume'].rolling(vol_ma_window).mean().bfill()
+        )
+
         # Internal states
         self.current_bar: int = 0
         self.start_bar: int = 0
@@ -54,9 +69,9 @@ class HourlyTradingEnv(gym.Env):
         self.trade_log: List[Trade] = []
         self.consecutive_no_trade_steps = 0
 
-        # Observation is just the balance
+        # Observation: [equity_ratio, ma_ratio, price_ratio, vol_ratio]
         self.observation_space = spaces.Box(
-            low=-np.inf, high=np.inf, shape=(1,), dtype=np.float32
+            low=-np.inf, high=np.inf, shape=(4,), dtype=np.float32
         )
 
         # [open_long_frac, open_short_frac, close_fraction, sl_factor, tp_factor]
@@ -73,7 +88,25 @@ class HourlyTradingEnv(gym.Env):
         return total
 
     def _get_obs(self) -> np.ndarray:
-        return np.array([self.balance], dtype=np.float32)
+        idx = min(self.current_bar, self.n_bars - 1)
+        row = self.df.iloc[idx]
+        ma_short = row['ma_short']
+        ma_long = row['ma_long']
+        vol_ma = row['vol_ma']
+
+        equity_ratio = self.balance / self.initial_balance
+        ma_ratio = row['ma_short'] / (ma_long + 1e-8)
+        price_ratio = row['close'] / (ma_short + 1e-8)
+        vol_ratio = row['volume'] / (vol_ma + 1e-8)
+
+        equity_ratio = np.clip(equity_ratio, 0.2, 5.0)
+        ma_ratio = np.clip(ma_ratio, 0.2, 5.0)
+        price_ratio = np.clip(price_ratio, 0.2, 5.0)
+        vol_ratio = np.clip(vol_ratio, 0.2, 5.0)
+
+        return np.array(
+            [equity_ratio, ma_ratio, price_ratio, vol_ratio], dtype=np.float32
+        )
 
     def reset(self, seed=None, options=None):
         super().reset(seed=seed)
@@ -228,10 +261,14 @@ class HourlyTradingEnv(gym.Env):
         step_closed_pnl = sum(t.pnl for t in closed_trades)
         reward = step_closed_pnl * self.reward_scaling
 
+        # Treat holding existing positions as an action
+        if no_trade_this_step and len(self.open_trades) > 0:
+            no_trade_this_step = False
+
         # penalty for no-trade: reduce balance and reward
         if no_trade_this_step:
             self.consecutive_no_trade_steps += 1
-            if self.penalize_no_trade_steps:
+            if self.penalize_no_trade_steps and len(self.open_trades) == 0:
                 self.balance -= self.no_trade_penalty
                 reward -= self.no_trade_penalty
                 if self.consecutive_no_trade_steps > self.consecutive_no_trade_allowed:
@@ -255,7 +292,7 @@ class HourlyTradingEnv(gym.Env):
         info = {}
 
         if terminated or truncated:
-            additional_pnl = 0.0
+            forced_close_pnl = 0.0
             c_price = c
             for trade in self.open_trades:
                 if not trade.closed:
@@ -266,10 +303,11 @@ class HourlyTradingEnv(gym.Env):
                     trade.close(self.current_bar, exec_price)
                     fee = abs(exec_price * trade.size_in_coins) * self.commission_rate
                     trade.pnl -= fee
-                    additional_pnl += trade.pnl
+                    forced_close_pnl += trade.pnl
                     trade.closed = True
-            self.balance += additional_pnl
-            reward += additional_pnl * self.reward_scaling
+            self.balance += forced_close_pnl
+            reward += forced_close_pnl * self.reward_scaling
+            info["forced_close_pnl"] = forced_close_pnl
 
         return obs, reward, terminated, truncated, info
 

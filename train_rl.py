@@ -167,6 +167,9 @@ def make_env_from_df(df: pd.DataFrame) -> DummyVecEnv:
         penalize_no_trade_steps=config["penalize_no_trade_steps"],
         no_trade_penalty=config["no_trade_penalty"],
         consecutive_no_trade_allowed=config["consecutive_no_trade_allowed"],
+        ma_short_window=config["ma_short_window"],
+        ma_long_window=config["ma_long_window"],
+        vol_ma_window=config["vol_ma_window"],
     )
     env = Monitor(env)  # важно: чтобы получать info['episode'] для метрик
     return DummyVecEnv([lambda: env])
@@ -330,6 +333,9 @@ def main():
                 penalize_no_trade_steps=config["penalize_no_trade_steps"],
                 no_trade_penalty=config["no_trade_penalty"],
                 consecutive_no_trade_allowed=config["consecutive_no_trade_allowed"],
+                ma_short_window=config["ma_short_window"],
+                ma_long_window=config["ma_long_window"],
+                vol_ma_window=config["vol_ma_window"],
             )
             summary = evaluate_once(model, test_env)
             summary_row = {
