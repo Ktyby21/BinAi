@@ -1,37 +1,162 @@
 """
-train_rl.py
+train_rl_all_pairs.py
 
-- Loads historical 1-hour CSV data
-- Creates HourlyTradingEnv
-- Either loads a previously saved PPO model (if "ppo_hourly_model.zip" exists)
-  or creates a new PPO model from scratch.
-- Trains the PPO agent for 500,000 timesteps.
-- Saves (or overwrites) the model afterwards.
-- Then does a quick test *separately* on a single environment (no DummyVecEnv),
-  using random starts for each test episode if you want multiple episodes in test.
+- Последовательно тренируем PPO на КАЖДОЙ паре из большого CSV.
+- Читаем CSV чанками, фильтруем по symbol (чтобы не грузить весь файл в RAM).
+- По каждой паре показываем «живой» прогресс в одной строке:
+  train[SYMBOL] ... FPS=... ETA=... lastR=... avgR=... eps=...
+- После КАЖДОЙ пары сохраняем модель и короткую сводку в logs/training_summary.csv.
+- Логи для TensorBoard: ./tensorboard_logs  (запуск: `tensorboard --logdir ./tensorboard_logs`)
+
+Требуется: pandas, tqdm, numpy, stable_baselines3, gymnasium (твоя env), (опц.) tensorboard.
 """
+
 import os
+import gc
+import time
 import json
+import numpy as np
 import pandas as pd
+from math import ceil
+from typing import List, Set, Dict, Any
+
+from tqdm import tqdm
+
 from stable_baselines3 import PPO
 from stable_baselines3.common.vec_env import DummyVecEnv
-from env.hourly_trading_env import HourlyTradingEnv
+from stable_baselines3.common.monitor import Monitor
+from stable_baselines3.common.callbacks import BaseCallback, CheckpointCallback
+from stable_baselines3.common.logger import configure as sb3_configure
 
-# Загрузка конфигурации из JSON
+from env.hourly_trading_env import HourlyTradingEnv  # твоя среда
+
+
+# ----------------- CONFIG -----------------
 with open("config.json", "r") as f:
     config = json.load(f)
 
-def main():
-    # 1) Load CSV
-    df = pd.read_csv("historical_data_1h.csv")
-    required_cols = ["open", "high", "low", "close", "volume"]
-    for col in required_cols:
-        if col not in df.columns:
-            raise ValueError(f"Column '{col}' not found in CSV.")
+MODEL_PATH = "ppo_hourly_model.zip"
+LOG_DIR = "./logs"
+TB_DIR = "./tensorboard_logs"
+os.makedirs(LOG_DIR, exist_ok=True)
+os.makedirs(TB_DIR, exist_ok=True)
+
+PER_SYMBOL_TIMESTEPS = int(config.get("per_symbol_timesteps", config.get("learn_timesteps", 10_000)))
+SLEEP_BETWEEN = float(config.get("sleep_between_symbols_sec", 2))
+CHECKPOINT_FREQ = int(config.get("checkpoint_freq", 20_000))
+WHITELIST = set(config.get("symbols_whitelist", []))
+BLACKLIST = set(config.get("symbols_blacklist", []))
+SUMMARY_CSV = os.path.join(LOG_DIR, "training_summary.csv")
+
+
+def _detect_csv_path() -> str:
+    candidates = [
+        config.get("train_csv_file"),
+        "historical_data_1h.csv",
+        config.get("data_output_file"),
+        "top_pairs_1h.csv",
+    ]
+    for p in candidates:
+        if p and os.path.isfile(p):
+            return p
+    raise FileNotFoundError("Не нашёл CSV. Укажи config['train_csv_file'] или положи файл рядом со скриптом.")
+
+
+CSV_PATH = _detect_csv_path()
+
+
+# ----------------- HELPERS -----------------
+def print_progress_legend() -> None:
+    print(
+        "\nПояснения к прогрессу обучения:\n"
+        "  FPS  — шагов обучения/сек (чем выше, тем быстрее идёт тренировка).\n"
+        "  ETA  — ориентировочное время до конца обучения НА ТЕКУЩЕЙ ПАРЕ.\n"
+        "  lastR — суммарная награда последнего завершённого эпизода.\n"
+        "  avgR  — средняя награда по последним N эпизодам (окно по умолчанию N=20).\n"
+        "  eps   — сколько эпизодов завершено на текущей паре за эту сессию.\n"
+    )
+
+
+def discover_symbols(path: str, chunk_size: int = 1_000_000) -> List[str]:
+    """Собираем уникальные символы из огромного CSV без загрузки всего файла."""
+    syms: Set[str] = set()
+    for ch in pd.read_csv(path, usecols=["symbol"], chunksize=chunk_size, dtype={"symbol": "string"}):
+        syms.update(ch["symbol"].dropna().unique().tolist())
+    symbols = sorted(s for s in syms if s)
+
+    if WHITELIST:
+        symbols = [s for s in symbols if s in WHITELIST]
+    if BLACKLIST:
+        symbols = [s for s in symbols if s not in BLACKLIST]
+    if not symbols:
+        raise ValueError("После фильтров не осталось символов.")
+    return symbols
+
+
+def load_one_symbol_csv(path: str, symbol: str, chunk_size: int = 1_000_000) -> pd.DataFrame:
+    """Читаем CSV чанками и оставляем только строки нужного symbol."""
+    usecols = ["timestamp", "open", "high", "low", "close", "volume", "symbol"]
+
+    # Оценка количества чанков чисто для progress bar (необязательно)
+    try:
+        file_size_mb = os.path.getsize(path) / (1024 * 1024)
+        avg_row_size_bytes = 45  # грубая эвристика
+        est_rows = int((file_size_mb * 1024 * 1024) / avg_row_size_bytes)
+        est_chunks = max(1, ceil(est_rows / chunk_size))
+    except Exception:
+        est_chunks = None
+
+    parts = []
+    reader = pd.read_csv(
+        path,
+        usecols=usecols,
+        parse_dates=["timestamp"],
+        chunksize=chunk_size,
+        dtype={
+            "open": "float64",
+            "high": "float64",
+            "low": "float64",
+            "close": "float64",
+            "volume": "float64",
+            "symbol": "string",
+        },
+    )
+
+    with tqdm(total=est_chunks, unit="chunk", desc=f"load[{symbol}]", leave=False) as pbar:
+        for ch in reader:
+            part = ch[ch["symbol"] == symbol]
+            if not part.empty:
+                parts.append(part)
+            if est_chunks:
+                pbar.update(1)
+
+    if not parts:
+        raise ValueError(f"В файле нет строк для {symbol}")
+
+    df = pd.concat(parts, ignore_index=True)
+    df.sort_values("timestamp", inplace=True)
+    df.drop_duplicates(subset=["timestamp", "symbol"], inplace=True)
+
+    # sanity-check: только один символ
+    assert df["symbol"].nunique() == 1 and df["symbol"].iloc[0] == symbol
+
+    # экономия памяти
+    for c in ["open", "high", "low", "close", "volume"]:
+        df[c] = pd.to_numeric(df[c], errors="coerce").astype("float32")
+
+    # среде symbol не нужен
+    df.drop(columns=["symbol"], inplace=True)
     df.reset_index(drop=True, inplace=True)
+    return df
 
-    # 2) Create environment for TRAINING
-    train_env = HourlyTradingEnv(
+
+def make_env_from_df(df: pd.DataFrame) -> DummyVecEnv:
+    required = {"timestamp", "open", "high", "low", "close", "volume"}
+    miss = required - set(df.columns)
+    if miss:
+        raise ValueError(f"Нет столбцов: {miss}")
+
+    env = HourlyTradingEnv(
         df=df,
         window_size=config["window_size"],
         initial_balance=config["initial_balance"],
@@ -41,66 +166,200 @@ def main():
         reward_scaling=config["reward_scaling"],
         penalize_no_trade_steps=config["penalize_no_trade_steps"],
         no_trade_penalty=config["no_trade_penalty"],
-        consecutive_no_trade_allowed=config["consecutive_no_trade_allowed"]
+        consecutive_no_trade_allowed=config["consecutive_no_trade_allowed"],
     )
-    vec_train_env = DummyVecEnv([lambda: train_env])
+    env = Monitor(env)  # важно: чтобы получать info['episode'] для метрик
+    return DummyVecEnv([lambda: env])
 
-    model_path = "ppo_hourly_model.zip"
-    if os.path.isfile(model_path):
-        print("Found existing model file. Loading it...")
-        model = PPO.load(model_path, env=vec_train_env, verbose=1)
-    else:
-        print("No existing model file found. Creating new PPO model from scratch...")
-        model = PPO(
-            policy="MlpPolicy",
-            env=vec_train_env,
-            verbose=1,
-            tensorboard_log="./tensorboard_logs/"
+
+def evaluate_once(model: PPO, env: HourlyTradingEnv) -> Dict[str, Any]:
+    obs, info = env.reset()
+    done = False
+    total_reward = 0.0
+    steps = 0
+    while not done:
+        action, _ = model.predict(obs, deterministic=True)
+        obs, reward, terminated, truncated, info = env.step(action)
+        total_reward += float(reward)
+        done = terminated or truncated
+        steps += 1
+    closed_trades = [t for t in getattr(env, "trade_log", []) if getattr(t, "closed", False)]
+    return {
+        "steps": steps,
+        "total_reward": total_reward,
+        "final_balance": float(getattr(env, "balance", float("nan"))),
+        "closed_trades": len(closed_trades),
+    }
+
+
+def append_summary_row(path: str, row: Dict[str, Any]) -> None:
+    df = pd.DataFrame([row])
+    header = not os.path.isfile(path)
+    df.to_csv(path, mode="a", index=False, header=header)
+
+
+# --------- Callbacks для «живого» прогресса ---------
+class EpisodeStatsCallback(BaseCallback):
+    """Обновляет postfix у tqdm: lastR/avgR/eps по завершённым эпизодам."""
+    def __init__(self, pbar, window: int = 20):
+        super().__init__()
+        self.pbar = pbar
+        self.window = window
+        self.ep_rewards: List[float] = []
+        self.total_episodes = 0
+
+    def _on_step(self) -> bool:
+        infos = self.locals.get("infos", [])
+        for info in infos:
+            ep = info.get("episode")  # добавляет Monitor на конце эпизода
+            if ep is not None:
+                self.total_episodes += 1
+                r = float(ep.get("r", 0.0))
+                self.ep_rewards.append(r)
+                avg = float(np.mean(self.ep_rewards[-self.window:])) if self.ep_rewards else 0.0
+                # обновим подпись у прогресс-бара
+                self.pbar.set_postfix(
+                    lastR=f"{r:.2f}",
+                    avgR=f"{avg:.2f}",
+                    eps=self.total_episodes
+                )
+        return True
+
+
+class TqdmProgressCallback(BaseCallback):
+    """Рисует прогресс timesteps, FPS и ETA без спама stdout-логами SB3."""
+    def __init__(self, pbar, total_timesteps: int):
+        super().__init__()
+        self.pbar = pbar
+        self.total = total_timesteps
+        self.start_n = 0
+        self.start_t = 0.0
+
+    def _on_training_start(self) -> None:
+        self.start_n = self.num_timesteps
+        self.start_t = time.time()
+        self.pbar.reset(total=self.total)
+
+    def _on_step(self) -> bool:
+        done = self.num_timesteps - self.start_n
+        if done > self.pbar.n:
+            self.pbar.n = min(done, self.total)
+        elapsed = max(1e-6, time.time() - self.start_t)
+        fps = done / elapsed
+        remaining = max(0, self.total - done)
+        eta = remaining / fps if fps > 0 else float("inf")
+        self.pbar.set_postfix(
+            FPS=f"{fps:,.0f}",
+            ETA=f"{eta:,.0f}s",  # секунд до конца текущей пары
         )
+        self.pbar.refresh()
+        return True
 
-    print("Starting training...")
-    model.learn(total_timesteps=config["train_timesteps"])
-    print("Training finished.")
+    def _on_training_end(self) -> None:
+        self.pbar.n = self.total
+        self.pbar.refresh()
 
-    model.save(model_path)
-    print(f"Model saved to {model_path}")
 
-    test_env = HourlyTradingEnv(
-        df=df,
-        window_size=config["window_size"],
-        initial_balance=config["initial_balance"],
-        commission_rate=config["commission_rate"],
-        slippage_rate=config["slippage_rate"],
-        max_bars=config["max_bars"],
-        reward_scaling=config["reward_scaling"],
-        penalize_no_trade_steps=config["penalize_no_trade_steps"],
-        no_trade_penalty=config["no_trade_penalty"],
-        consecutive_no_trade_allowed=config["consecutive_no_trade_allowed"]
-    )
+# ----------------- MAIN -------------------
+def main():
+    print(f"CSV: {CSV_PATH}")
+    print_progress_legend()
 
-    n_test_episodes = 3
-    for ep_i in range(n_test_episodes):
-        obs, info = test_env.reset()
-        done = False
-        total_reward = 0.0
-        steps = 0
-        while not done:
-            action, _ = model.predict(obs, deterministic=True)
-            obs, reward, terminated, truncated, info = test_env.step(action)
-            total_reward += reward
-            done = (terminated or truncated)
-            steps += 1
+    symbols = discover_symbols(CSV_PATH)
+    print(f"Символов для обучения: {len(symbols)}")
+    print("Пример:", symbols[:10])
 
-        print(f"Test Episode {ep_i+1}: finished in {steps} steps.")
-        print(f"  total_reward: {total_reward:.2f}")
-        print(f"  final balance: {test_env.balance:.2f}")
-        closed_trades = [t for t in test_env.trade_log if t.closed]
-        print(f"  number of closed trades: {len(closed_trades)}")
-        if len(closed_trades) > 0:
-            print("  sample closed trades:")
-            for i, tr in enumerate(closed_trades[:5]):
-                print(f"    {i+1}) {tr.direction}, bar={tr.entry_bar}→{tr.exit_bar}, "
-                      f"entry={tr.entry_price:.2f}, exit={tr.exit_price:.2f}, pnl={tr.pnl:.2f}")
+    # чекпоинты (по глобальному счётчику шагов)
+    os.makedirs("./checkpoints", exist_ok=True)
+    checkpoint_cb = CheckpointCallback(save_freq=CHECKPOINT_FREQ, save_path="./checkpoints", name_prefix="ppo_hourly")
+
+    # первая пара — чтобы инициализировать модель/логгер
+    first_df = load_one_symbol_csv(CSV_PATH, symbols[0])
+    vec_env = make_env_from_df(first_df)
+
+    # создаём/грузим модель, без спама в консоль
+    if os.path.isfile(MODEL_PATH):
+        print("Загружаю сохранённую модель…")
+        model = PPO.load(MODEL_PATH, env=vec_env, verbose=0, tensorboard_log=TB_DIR)
+    else:
+        print("Создаю новую модель…")
+        model = PPO(policy="MlpPolicy", env=vec_env, verbose=0, tensorboard_log=TB_DIR)
+
+    # аккуратный логгер: CSV + TensorBoard
+    run_name = time.strftime("%Y%m%d-%H%M%S")
+    per_run_logdir = os.path.join(LOG_DIR, f"run_{run_name}")
+    os.makedirs(per_run_logdir, exist_ok=True)
+    new_logger = sb3_configure(per_run_logdir, ["csv", "tensorboard"])
+    model.set_logger(new_logger)
+
+    for i, sym in enumerate(tqdm(symbols, desc="Symbols", unit="sym")):
+        try:
+            df = first_df if i == 0 else load_one_symbol_csv(CSV_PATH, sym)
+
+            # пропуск слишком коротких серий
+            if len(df) <= config["window_size"] + 5:
+                tqdm.write(f"[skip] {sym}: мало данных ({len(df)})")
+                continue
+
+            vec_env = make_env_from_df(df)
+            model.set_env(vec_env)
+
+            # прогресс по текущей паре
+            with tqdm(total=PER_SYMBOL_TIMESTEPS, desc=f"train[{sym}]", unit="step", leave=False) as pbar:
+                cb_progress = TqdmProgressCallback(pbar, PER_SYMBOL_TIMESTEPS)
+                cb_episode  = EpisodeStatsCallback(pbar, window=20)
+                model.learn(
+                    total_timesteps=PER_SYMBOL_TIMESTEPS,
+                    reset_num_timesteps=False,
+                    callback=[checkpoint_cb, cb_progress, cb_episode],
+                )
+
+            # сохраняем модель после каждой пары
+            model.save(MODEL_PATH)
+            tqdm.write(f"[saved] {MODEL_PATH}")
+
+            # мини-оценка и сводка
+            test_env = HourlyTradingEnv(
+                df=df,
+                window_size=config["window_size"],
+                initial_balance=config["initial_balance"],
+                commission_rate=config["commission_rate"],
+                slippage_rate=config["slippage_rate"],
+                max_bars=config["max_bars"],
+                reward_scaling=config["reward_scaling"],
+                penalize_no_trade_steps=config["penalize_no_trade_steps"],
+                no_trade_penalty=config["no_trade_penalty"],
+                consecutive_no_trade_allowed=config["consecutive_no_trade_allowed"],
+            )
+            summary = evaluate_once(model, test_env)
+            summary_row = {
+                "symbol": sym,
+                "timesteps": PER_SYMBOL_TIMESTEPS,
+                **summary
+            }
+            append_summary_row(SUMMARY_CSV, summary_row)
+            tqdm.write(f"[summary] {sym}: steps={summary['steps']}, "
+                       f"reward={summary['total_reward']:.2f}, "
+                       f"final_balance={summary['final_balance']:.2f}, "
+                       f"closed_trades={summary['closed_trades']}")
+
+            # «перерыв», если нужен
+            if SLEEP_BETWEEN > 0:
+                time.sleep(SLEEP_BETWEEN)
+
+        except KeyboardInterrupt:
+            print("\nОстановлено пользователем. Сохраняю модель и выхожу…")
+            model.save(MODEL_PATH)
+            break
+        except Exception as e:
+            tqdm.write(f"[error] {sym}: {e}")
+        finally:
+            # подчистка
+            del vec_env
+            gc.collect()
+
+    print(f"\nГотово.\nСводка: {SUMMARY_CSV}\nTensorBoard: {TB_DIR}  (запуск: tensorboard --logdir={TB_DIR})")
+
 
 if __name__ == "__main__":
     main()
