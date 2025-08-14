@@ -1,8 +1,10 @@
 venv/
 tensorboard_logs/
 __pycache__/
-ppo_hourly_model.zip
+ppo_hourly_model*
 *.csv
 *.DS_Store
 test.py
 *.log
+logs/
+checkpoints/

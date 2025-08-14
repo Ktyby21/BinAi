@@ -19,6 +19,7 @@ import numpy as np
 import pandas as pd
 from math import ceil
 from typing import List, Set, Dict, Any
+from statistics import mean, median
 
 from tqdm import tqdm
 
@@ -200,6 +201,75 @@ def append_summary_row(path: str, row: Dict[str, Any]) -> None:
     header = not os.path.isfile(path)
     df.to_csv(path, mode="a", index=False, header=header)
 
+def summarize_run(rows: List[Dict[str, Any]], initial_balance: float, save_dir: str, run_name: str) -> None:
+    if not rows:
+        print("\n(Сводка прогона: нет строк для агрегации)")
+        return
+
+    df = pd.DataFrame(rows)
+    df["roi"] = df["final_balance"] / float(initial_balance) - 1.0
+
+    n = len(df)
+    profitable_mask = df["final_balance"] > float(initial_balance)
+
+    metrics = {
+        "n_pairs": int(n),
+        "steps_total": int(df["steps"].sum()),
+        "steps_mean": float(df["steps"].mean()),
+        "reward_mean": float(df["total_reward"].mean()),
+        "reward_median": float(df["total_reward"].median()),
+        "reward_std": float(df["total_reward"].std(ddof=0)),
+        "final_balance_mean": float(df["final_balance"].mean()),
+        "final_balance_median": float(df["final_balance"].median()),
+        "final_balance_std": float(df["final_balance"].std(ddof=0)),
+        "roi_mean": float(df["roi"].mean()),
+        "roi_median": float(df["roi"].median()),
+        "roi_std": float(df["roi"].std(ddof=0)),
+        "profitable_pairs": int(profitable_mask.sum()),
+        "profitable_share": float(profitable_mask.mean()),
+        "closed_trades_total": int(df["closed_trades"].sum()),
+        "closed_trades_mean": float(df["closed_trades"].mean()),
+    }
+
+    # Лучшие/худшие по финальному балансу
+    best_row = df.loc[df["final_balance"].idxmax()]
+    worst_row = df.loc[df["final_balance"].idxmin()]
+    metrics.update({
+        "best_symbol": str(best_row["symbol"]),
+        "best_final_balance": float(best_row["final_balance"]),
+        "best_reward": float(best_row["total_reward"]),
+        "best_closed_trades": int(best_row["closed_trades"]),
+        "worst_symbol": str(worst_row["symbol"]),
+        "worst_final_balance": float(worst_row["final_balance"]),
+        "worst_reward": float(worst_row["total_reward"]),
+        "worst_closed_trades": int(worst_row["closed_trades"]),
+    })
+
+    # Печать в консоль — аккуратная сводка
+    print("\n==============================")
+    print(" СВОДКА ПО ВСЕМ ПАРАМ ПРОГОНА ")
+    print("==============================")
+    print(f"Пар: {metrics['n_pairs']}, шагов (факт): {metrics['steps_total']:,}")
+    print(f"Средн. награда: {metrics['reward_mean']:.2f}  | медиана: {metrics['reward_median']:.2f}  | σ: {metrics['reward_std']:.2f}")
+    print(f"Средн. фин. баланс: {metrics['final_balance_mean']:.2f}  | медиана: {metrics['final_balance_median']:.2f}  | σ: {metrics['final_balance_std']:.2f}")
+    print(f"Средн. ROI: {metrics['roi_mean']*100:.2f}%  | медиана ROI: {metrics['roi_median']*100:.2f}%  | σ ROI: {metrics['roi_std']*100:.2f}%")
+    print(f"Профитных пар: {metrics['profitable_pairs']}/{metrics['n_pairs']}  ({metrics['profitable_share']*100:.1f}%)")
+    print(f"Сделок всего: {metrics['closed_trades_total']:,}  | в среднем на пару: {metrics['closed_trades_mean']:.1f}")
+    print(f"Лучшее:  {metrics['best_symbol']}  баланс={metrics['best_final_balance']:.2f}  reward={metrics['best_reward']:.2f}  trades={metrics['best_closed_trades']}")
+    print(f"Худшее:  {metrics['worst_symbol']} баланс={metrics['worst_final_balance']:.2f} reward={metrics['worst_reward']:.2f} trades={metrics['worst_closed_trades']}")
+
+    # Сохранения: подробный CSV по парам + JSON со сводкой
+    os.makedirs(save_dir, exist_ok=True)
+    csv_pairs = os.path.join(save_dir, f"run_{run_name}_summary_pairs.csv")
+    json_path = os.path.join(save_dir, f"run_{run_name}_summary.json")
+
+    df.sort_values("final_balance", ascending=False).to_csv(csv_pairs, index=False)
+    with open(json_path, "w", encoding="utf-8") as f:
+        json.dump(metrics, f, ensure_ascii=False, indent=2)
+
+    print(f"\nСводные файлы сохранены:")
+    print(f"  • Пары (детально): {csv_pairs}")
+    print(f"  • Агрегат (JSON):  {json_path}")
 
 # --------- Callbacks для «живого» прогресса ---------
 class EpisodeStatsCallback(BaseCallback):
@@ -294,6 +364,7 @@ def main():
     os.makedirs(per_run_logdir, exist_ok=True)
     new_logger = sb3_configure(per_run_logdir, ["csv", "tensorboard"])
     model.set_logger(new_logger)
+    run_rows: List[Dict[str, Any]] = []
 
     for i, sym in enumerate(tqdm(symbols, desc="Symbols", unit="sym")):
         try:
@@ -348,7 +419,7 @@ def main():
                        f"reward={summary['total_reward']:.2f}, "
                        f"final_balance={summary['final_balance']:.2f}, "
                        f"closed_trades={summary['closed_trades']}")
-
+            run_rows.append(summary_row)
             # «перерыв», если нужен
             if SLEEP_BETWEEN > 0:
                 time.sleep(SLEEP_BETWEEN)
@@ -363,7 +434,7 @@ def main():
             # подчистка
             del vec_env
             gc.collect()
-
+    summarize_run(run_rows, initial_balance=config["initial_balance"], save_dir=LOG_DIR, run_name=run_name)
     print(f"\nГотово.\nСводка: {SUMMARY_CSV}\nTensorBoard: {TB_DIR}  (запуск: tensorboard --logdir={TB_DIR})")
 
 
