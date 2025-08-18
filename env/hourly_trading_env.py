@@ -199,13 +199,15 @@ class HourlyTradingEnv(gym.Env):
         if self.max_bars is not None:
             max_start = self.n_bars - self.max_bars
         else:
-            max_start = self.n_bars - 1
+            max_start = self.n_bars - 2
 
         min_start = self.window_size
         if max_start < min_start:
             self.start_bar = self.window_size
         else:
             self.start_bar = self.np_random.integers(low=min_start, high=max_start + 1)
+        if self.start_bar >= self.n_bars - 1:
+            self.start_bar = max(self.n_bars - 2, self.window_size)
 
         self.current_bar = self.start_bar
         obs = self._get_obs()
