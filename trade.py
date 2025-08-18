@@ -11,7 +11,9 @@ class Trade:
         entry_price: float,
         size_in_coins: float,
         stop_loss: float,
-        take_profit: float
+        take_profit: float,
+        notional: float,
+        open_fee: float = 0.0,
     ):
         self.direction = direction
         self.entry_bar = entry_bar
@@ -19,6 +21,9 @@ class Trade:
         self.size_in_coins = size_in_coins
         self.stop_loss = stop_loss
         self.take_profit = take_profit
+
+        self.notional = notional
+        self.open_fee = open_fee
 
         self.exit_bar: Optional[int] = None
         self.exit_price: Optional[float] = None

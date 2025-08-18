@@ -33,8 +33,6 @@ class HourlyTradingEnv(gym.Env):
     ):
         super().__init__()
 
-        self.df = df.reset_index(drop=True)
-        self.n_bars = len(self.df)
         self.window_size = window_size
         self.initial_balance = initial_balance
         self.commission_rate = commission_rate
@@ -46,20 +44,11 @@ class HourlyTradingEnv(gym.Env):
         self.no_trade_penalty = no_trade_penalty
         self.consecutive_no_trade_allowed = consecutive_no_trade_allowed
 
-        # Compute ATR for SL/TP
-        self.df['hl_range'] = self.df['high'] - self.df['low']
-        self.df['atr'] = self.df['hl_range'].rolling(14).mean().bfill()
+        self.ma_short_window = ma_short_window
+        self.ma_long_window = ma_long_window
+        self.vol_ma_window = vol_ma_window
 
-        # Moving averages for dynamic features
-        self.df['ma_short'] = (
-            self.df['close'].rolling(ma_short_window).mean().bfill()
-        )
-        self.df['ma_long'] = (
-            self.df['close'].rolling(ma_long_window).mean().bfill()
-        )
-        self.df['vol_ma'] = (
-            self.df['volume'].rolling(vol_ma_window).mean().bfill()
-        )
+        self.update_data(df)
 
         # Internal states
         self.current_bar: int = 0
@@ -69,15 +58,42 @@ class HourlyTradingEnv(gym.Env):
         self.trade_log: List[Trade] = []
         self.consecutive_no_trade_steps = 0
 
-        # Observation: [equity_ratio, ma_ratio, price_ratio, vol_ratio]
+        # Observation: [equity_ratio, ma_ratio, price_ratio, vol_ratio,
+        #               net_exposure_ratio, open_notional_ratio]
         self.observation_space = spaces.Box(
-            low=-np.inf, high=np.inf, shape=(4,), dtype=np.float32
+            low=-np.inf, high=np.inf, shape=(6,), dtype=np.float32
         )
 
         # [open_long_frac, open_short_frac, close_fraction, sl_factor, tp_factor]
         self.action_space = spaces.Box(
             low=np.array([0, 0, 0, 0, 0], dtype=np.float32),
             high=np.array([1, 1, 1, 3, 3], dtype=np.float32),
+        )
+
+    def update_data(self, df: pd.DataFrame):
+        """Recompute indicators and reset internal dataframe."""
+        self.df = df.reset_index(drop=True)
+        self.n_bars = len(self.df)
+
+        prev_close = self.df['close'].shift(1)
+        tr = pd.concat(
+            [
+                self.df['high'] - self.df['low'],
+                (self.df['high'] - prev_close).abs(),
+                (self.df['low'] - prev_close).abs(),
+            ],
+            axis=1,
+        ).max(axis=1)
+        self.df['atr'] = tr.rolling(14).mean().bfill()
+
+        self.df['ma_short'] = (
+            self.df['close'].rolling(self.ma_short_window).mean().bfill()
+        )
+        self.df['ma_long'] = (
+            self.df['close'].rolling(self.ma_long_window).mean().bfill()
+        )
+        self.df['vol_ma'] = (
+            self.df['volume'].rolling(self.vol_ma_window).mean().bfill()
         )
 
     def _get_total_coins(self) -> float:
@@ -94,19 +110,81 @@ class HourlyTradingEnv(gym.Env):
         ma_long = row['ma_long']
         vol_ma = row['vol_ma']
 
-        equity_ratio = self.balance / self.initial_balance
+        current_price = row['close']
+        unrealized = 0.0
+        total_notional = 0.0
+        net_notional = 0.0
+        for t in self.open_trades:
+            if t.closed:
+                continue
+            total_notional += t.notional
+            if t.direction == 'long':
+                unrealized += (current_price - t.entry_price) * t.size_in_coins
+                net_notional += t.notional
+            else:
+                unrealized += (t.entry_price - current_price) * abs(t.size_in_coins)
+                net_notional -= t.notional
+
+        equity_ratio = (self.balance + unrealized) / self.initial_balance
         ma_ratio = row['ma_short'] / (ma_long + 1e-8)
         price_ratio = row['close'] / (ma_short + 1e-8)
         vol_ratio = row['volume'] / (vol_ma + 1e-8)
+        net_exposure_ratio = net_notional / self.initial_balance
+        open_notional_ratio = total_notional / self.initial_balance
 
         equity_ratio = np.clip(equity_ratio, 0.2, 5.0)
         ma_ratio = np.clip(ma_ratio, 0.2, 5.0)
         price_ratio = np.clip(price_ratio, 0.2, 5.0)
         vol_ratio = np.clip(vol_ratio, 0.2, 5.0)
+        net_exposure_ratio = np.clip(net_exposure_ratio, -5.0, 5.0)
+        open_notional_ratio = np.clip(open_notional_ratio, 0.0, 5.0)
 
         return np.array(
-            [equity_ratio, ma_ratio, price_ratio, vol_ratio], dtype=np.float32
+            [
+                equity_ratio,
+                ma_ratio,
+                price_ratio,
+                vol_ratio,
+                net_exposure_ratio,
+                open_notional_ratio,
+            ],
+            dtype=np.float32,
         )
+
+    def _settle_trade(
+        self,
+        trade: Trade,
+        exec_price: float,
+        bar_idx: int,
+        proportion: float = 1.0,
+    ) -> float:
+        """Close whole or part of a trade and update balance and PnL.
+
+        Returns the realized PnL portion."""
+        size = trade.size_in_coins * proportion
+        notional_part = trade.notional * proportion
+        open_fee_part = trade.open_fee * proportion
+
+        if trade.direction == 'long':
+            proceeds = exec_price * size
+            fee = abs(proceeds) * self.commission_rate
+            self.balance += proceeds - fee
+            pnl_part = proceeds - notional_part - open_fee_part - fee
+        else:
+            cost = abs(size) * exec_price
+            fee = cost * self.commission_rate
+            self.balance -= cost + fee
+            pnl_part = notional_part - cost - open_fee_part - fee
+
+        trade.pnl += pnl_part
+        trade.notional -= notional_part
+        trade.open_fee -= open_fee_part
+        trade.size_in_coins -= size
+        if proportion >= 1.0 or abs(trade.size_in_coins) < 1e-8:
+            trade.closed = True
+            trade.exit_bar = bar_idx
+            trade.exit_price = exec_price
+        return pnl_part
 
     def reset(self, seed=None, options=None):
         super().reset(seed=seed)
@@ -114,6 +192,7 @@ class HourlyTradingEnv(gym.Env):
         self.trade_log.clear()
         self.consecutive_no_trade_steps = 0
         self.balance = self.initial_balance
+        self.prev_equity = self.initial_balance
 
         if self.max_bars is not None:
             max_start = self.n_bars - self.max_bars
@@ -146,14 +225,11 @@ class HourlyTradingEnv(gym.Env):
 
         terminated = False
         truncated = False
-        reward = 0.0
 
         row = self.df.iloc[self.current_bar]
         o, h, l, c = row['open'], row['high'], row['low'], row['close']
         atr_val = row['atr']
         bar_idx = self.current_bar
-
-        closed_trades = []
 
         # ======= 1) Check SL/TP =======
         for trade in self.open_trades:
@@ -162,58 +238,29 @@ class HourlyTradingEnv(gym.Env):
             if trade.direction == 'long':
                 if l <= trade.stop_loss:
                     exec_price = trade.stop_loss * (1.0 - self.slippage_rate)
-                    trade.close(bar_idx, exec_price)
-                    fee = abs(exec_price * trade.size_in_coins) * self.commission_rate
-                    trade.pnl -= fee
-                    self.balance += trade.pnl
-                    closed_trades.append(trade)
+                    self._settle_trade(trade, exec_price, bar_idx)
                 elif h >= trade.take_profit:
                     exec_price = trade.take_profit * (1.0 - self.slippage_rate)
-                    trade.close(bar_idx, exec_price)
-                    fee = abs(exec_price * trade.size_in_coins) * self.commission_rate
-                    trade.pnl -= fee
-                    self.balance += trade.pnl
-                    closed_trades.append(trade)
+                    self._settle_trade(trade, exec_price, bar_idx)
             else:
                 if h >= trade.stop_loss:
                     exec_price = trade.stop_loss * (1.0 + self.slippage_rate)
-                    trade.close(bar_idx, exec_price)
-                    fee = abs(exec_price * trade.size_in_coins) * self.commission_rate
-                    trade.pnl -= fee
-                    self.balance += trade.pnl
-                    closed_trades.append(trade)
+                    self._settle_trade(trade, exec_price, bar_idx)
                 elif l <= trade.take_profit:
                     exec_price = trade.take_profit * (1.0 + self.slippage_rate)
-                    trade.close(bar_idx, exec_price)
-                    fee = abs(exec_price * trade.size_in_coins) * self.commission_rate
-                    trade.pnl -= fee
-                    self.balance += trade.pnl
-                    closed_trades.append(trade)
+                    self._settle_trade(trade, exec_price, bar_idx)
 
         # ======= 2) Partial close =======
         if close_fraction > 1e-8:
             for trade in self.open_trades:
                 if trade.closed:
                     continue
-                coins_to_close = trade.size_in_coins * close_fraction
-                if abs(coins_to_close) < 1e-8:
-                    continue
-                if trade.direction == 'long':
-                    exec_price = c * (1.0 - self.slippage_rate)
-                    partial_pnl = (exec_price - trade.entry_price) * coins_to_close
-                else:
-                    exec_price = c * (1.0 + self.slippage_rate)
-                    partial_pnl = (trade.entry_price - exec_price) * abs(coins_to_close)
-                fee = abs(exec_price * coins_to_close) * self.commission_rate
-                partial_pnl -= fee
-                self.balance += partial_pnl
-                trade.pnl += partial_pnl
-                trade.size_in_coins -= coins_to_close
-                if abs(trade.size_in_coins) < 1e-8:
-                    trade.closed = True
-                    trade.exit_bar = bar_idx
-                    trade.exit_price = exec_price
-                    closed_trades.append(trade)
+                exec_price = (
+                    c * (1.0 - self.slippage_rate)
+                    if trade.direction == 'long'
+                    else c * (1.0 + self.slippage_rate)
+                )
+                self._settle_trade(trade, exec_price, bar_idx, proportion=close_fraction)
 
         # ======= 3) Possibly open trades =======
         no_trade_this_step = True
@@ -224,55 +271,55 @@ class HourlyTradingEnv(gym.Env):
                 size_in_coins = invest_amount / entry_price
                 sl_price = entry_price - sl_factor * atr_val
                 tp_price = entry_price + tp_factor * atr_val
+                fee = invest_amount * self.commission_rate
+                self.balance -= invest_amount + fee
                 new_trade = Trade(
                     direction='long',
                     entry_bar=bar_idx,
                     entry_price=entry_price,
                     size_in_coins=size_in_coins,
                     stop_loss=sl_price,
-                    take_profit=tp_price
+                    take_profit=tp_price,
+                    notional=invest_amount,
+                    open_fee=fee,
                 )
                 self.open_trades.append(new_trade)
                 self.trade_log.append(new_trade)
-                fee = invest_amount * self.commission_rate
-                self.balance -= fee
                 no_trade_this_step = False
         elif open_short_frac > 1e-8 and open_long_frac < 1e-8:
             invest_amount = self.balance * open_short_frac
             if invest_amount > 0:
                 entry_price = o * (1.0 - self.slippage_rate)
-                size_in_coins = - invest_amount / entry_price
+                size_in_coins = -invest_amount / entry_price
                 sl_price = entry_price + sl_factor * atr_val
                 tp_price = entry_price - tp_factor * atr_val
+                fee = invest_amount * self.commission_rate
+                self.balance += invest_amount - fee
                 new_trade = Trade(
                     direction='short',
                     entry_bar=bar_idx,
                     entry_price=entry_price,
                     size_in_coins=size_in_coins,
                     stop_loss=sl_price,
-                    take_profit=tp_price
+                    take_profit=tp_price,
+                    notional=invest_amount,
+                    open_fee=fee,
                 )
                 self.open_trades.append(new_trade)
                 self.trade_log.append(new_trade)
-                fee = invest_amount * self.commission_rate
-                self.balance -= fee
                 no_trade_this_step = False
-
-        step_closed_pnl = sum(t.pnl for t in closed_trades)
-        reward = step_closed_pnl * self.reward_scaling
 
         # Treat holding existing positions as an action
         if no_trade_this_step and len(self.open_trades) > 0:
             no_trade_this_step = False
 
-        # penalty for no-trade: reduce balance and reward
+        # penalty for no-trade: reduce balance
         if no_trade_this_step:
             self.consecutive_no_trade_steps += 1
             if self.penalize_no_trade_steps and len(self.open_trades) == 0:
                 self.balance -= self.no_trade_penalty
-                reward -= self.no_trade_penalty
                 if self.consecutive_no_trade_steps > self.consecutive_no_trade_allowed:
-                    reward -= self.no_trade_penalty
+                    self.balance -= self.no_trade_penalty
         else:
             self.consecutive_no_trade_steps = 0
 
@@ -286,29 +333,40 @@ class HourlyTradingEnv(gym.Env):
             terminated = True
         if self.balance <= 0.0:
             terminated = True
-            reward -= 1000.0 * self.reward_scaling
 
-        obs = self._get_obs()
         info = {}
-
         if terminated or truncated:
             forced_close_pnl = 0.0
             c_price = c
             for trade in self.open_trades:
                 if not trade.closed:
-                    if trade.direction == 'long':
-                        exec_price = c_price * (1.0 - self.slippage_rate)
-                    else:
-                        exec_price = c_price * (1.0 + self.slippage_rate)
-                    trade.close(self.current_bar, exec_price)
-                    fee = abs(exec_price * trade.size_in_coins) * self.commission_rate
-                    trade.pnl -= fee
-                    forced_close_pnl += trade.pnl
-                    trade.closed = True
-            self.balance += forced_close_pnl
-            reward += forced_close_pnl * self.reward_scaling
+                    exec_price = (
+                        c_price * (1.0 - self.slippage_rate)
+                        if trade.direction == 'long'
+                        else c_price * (1.0 + self.slippage_rate)
+                    )
+                    forced_close_pnl += self._settle_trade(trade, exec_price, self.current_bar)
             info["forced_close_pnl"] = forced_close_pnl
 
+        # Compute reward based on equity change
+        unrealized = 0.0
+        for t in self.open_trades:
+            if t.closed:
+                continue
+            if t.direction == 'long':
+                unrealized += (c - t.entry_price) * t.size_in_coins
+            else:
+                unrealized += (t.entry_price - c) * abs(t.size_in_coins)
+        current_equity = self.balance + unrealized
+        if not hasattr(self, 'prev_equity'):
+            self.prev_equity = current_equity
+        reward = (current_equity - self.prev_equity) * self.reward_scaling
+        self.prev_equity = current_equity
+
+        if self.balance <= 0.0:
+            reward -= 1000.0 * self.reward_scaling
+
+        obs = self._get_obs()
         return obs, reward, terminated, truncated, info
 
     def render(self):
