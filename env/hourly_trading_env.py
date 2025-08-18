@@ -175,7 +175,8 @@ class HourlyTradingEnv(gym.Env):
         else:
             cost = abs(size) * exec_price
             fee = cost * self.commission_rate
-            self.balance += (notional_part - cost - fee)
+            # Return reserved notional and realized PnL, minus closing fee
+            self.balance += 2 * notional_part - cost - fee
             pnl_part = (notional_part - cost) - open_fee_part - fee
         
         trade.pnl += pnl_part
@@ -301,7 +302,8 @@ class HourlyTradingEnv(gym.Env):
                 sl_price = entry_price + sl_factor * atr_val
                 tp_price = entry_price - tp_factor * atr_val
                 fee = invest_amount * self.commission_rate
-                self.balance += invest_amount - fee
+                # Reserve margin for the short position
+                self.balance -= invest_amount + fee
                 new_trade = Trade(
                     direction="short",
                     entry_bar=bar_idx,
@@ -340,6 +342,7 @@ class HourlyTradingEnv(gym.Env):
             terminated = True
 
         unrealized_check = 0.0
+        short_notional_check = 0.0
         for t in self.open_trades:
             if t.closed:
                 continue
@@ -347,7 +350,8 @@ class HourlyTradingEnv(gym.Env):
                 unrealized_check += (c - t.entry_price) * t.size_in_coins
             else:
                 unrealized_check += (t.entry_price - c) * abs(t.size_in_coins)
-        current_equity_check = self.balance + unrealized_check
+                short_notional_check += t.notional
+        current_equity_check = self.balance + unrealized_check + short_notional_check
         if current_equity_check <= 0.0 or self.balance <= 0.0:
             terminated = True
 
@@ -367,6 +371,7 @@ class HourlyTradingEnv(gym.Env):
 
         # Compute reward based on equity change
         unrealized = 0.0
+        short_notional = 0.0
         for t in self.open_trades:
             if t.closed:
                 continue
@@ -374,7 +379,8 @@ class HourlyTradingEnv(gym.Env):
                 unrealized += (c - t.entry_price) * t.size_in_coins
             else:
                 unrealized += (t.entry_price - c) * abs(t.size_in_coins)
-        current_equity = self.balance + unrealized
+                short_notional += t.notional
+        current_equity = self.balance + unrealized + short_notional
         if not hasattr(self, "prev_equity"):
             self.prev_equity = current_equity
         delta = np.log((current_equity + 1e-6) / (self.prev_equity + 1e-6))
