@@ -14,7 +14,13 @@ with open("config.json", "r") as f:
     config = json.load(f)
 
 # Load data
-DF = pd.read_csv("historical_data_1h.csv")
+data_file = config.get("data_output_file", "top_pairs_1h.csv")
+try:
+    DF = pd.read_csv(data_file)
+except FileNotFoundError as exc:
+    raise FileNotFoundError(
+        f"Data file '{data_file}' not found. Please generate it or update 'data_output_file' in config.json."
+    ) from exc
 
 REQUIRED_COLS = ["open", "high", "low", "close", "volume"]
 for col in REQUIRED_COLS:
