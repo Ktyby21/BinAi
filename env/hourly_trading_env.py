@@ -196,23 +196,23 @@ class HourlyTradingEnv(gym.Env):
         self.balance = self.initial_balance
         self.prev_equity = self.initial_balance
 
-        if self.max_bars is not None:
-            max_start = self.n_bars - self.max_bars
-        else:
-            max_start = self.n_bars - 2
-
         min_start = self.window_size
-        if max_start < min_start:
-            self.start_bar = self.window_size
+
+        # Guarantee training horizon away from dataset end
+        horizon = int(self.max_bars) if self.max_bars is not None else 512
+        horizon = max(2, min(horizon, self.n_bars - min_start - 2))
+
+        max_start = self.n_bars - horizon - 1
+        if max_start <= min_start:
+            self.start_bar = min_start
         else:
-            self.start_bar = self.np_random.integers(low=min_start, high=max_start + 1)
-        if self.start_bar >= self.n_bars - 1:
-            self.start_bar = max(self.n_bars - 2, self.window_size)
+            self.start_bar = int(
+                self.np_random.integers(low=min_start, high=max_start + 1)
+            )
 
         self.current_bar = self.start_bar
         obs = self._get_obs()
-        info = {}
-        return obs, info
+        return obs, {}
 
     def step(self, action: np.ndarray):
         open_long_frac = float(np.clip(action[0], 0.0, 1.0))
@@ -230,7 +230,7 @@ class HourlyTradingEnv(gym.Env):
 
         row = self.df.iloc[self.current_bar]
         o, h, l, c = row['open'], row['high'], row['low'], row['close']
-        atr_val = row['atr']
+        atr_val = float(max(row['atr'], 1e-8))
         bar_idx = self.current_bar
 
         # ======= 1) Check SL/TP =======
@@ -266,8 +266,11 @@ class HourlyTradingEnv(gym.Env):
 
         # ======= 3) Possibly open trades =======
         no_trade_this_step = True
+        max_alloc = 0.3  # limit per-trade allocation
         if open_long_frac > 1e-8 and open_short_frac < 1e-8:
-            invest_amount = self.balance * open_long_frac
+            invest_amount = min(
+                self.balance * open_long_frac, self.balance * max_alloc
+            )
             if invest_amount > 0:
                 entry_price = o * (1.0 + self.slippage_rate)
                 size_in_coins = invest_amount / entry_price
@@ -276,7 +279,7 @@ class HourlyTradingEnv(gym.Env):
                 fee = invest_amount * self.commission_rate
                 self.balance -= invest_amount + fee
                 new_trade = Trade(
-                    direction='long',
+                    direction="long",
                     entry_bar=bar_idx,
                     entry_price=entry_price,
                     size_in_coins=size_in_coins,
@@ -289,16 +292,18 @@ class HourlyTradingEnv(gym.Env):
                 self.trade_log.append(new_trade)
                 no_trade_this_step = False
         elif open_short_frac > 1e-8 and open_long_frac < 1e-8:
-            invest_amount = self.balance * open_short_frac
+            invest_amount = min(
+                self.balance * open_short_frac, self.balance * max_alloc
+            )
             if invest_amount > 0:
                 entry_price = o * (1.0 - self.slippage_rate)
                 size_in_coins = -invest_amount / max(entry_price, 1e-8)
                 sl_price = entry_price + sl_factor * atr_val
                 tp_price = entry_price - tp_factor * atr_val
                 fee = invest_amount * self.commission_rate
-                self.balance -= (invest_amount + fee)
+                self.balance += invest_amount - fee
                 new_trade = Trade(
-                    direction='short',
+                    direction="short",
                     entry_bar=bar_idx,
                     entry_price=entry_price,
                     size_in_coins=size_in_coins,
@@ -370,10 +375,10 @@ class HourlyTradingEnv(gym.Env):
             else:
                 unrealized += (t.entry_price - c) * abs(t.size_in_coins)
         current_equity = self.balance + unrealized
-        if not hasattr(self, 'prev_equity'):
+        if not hasattr(self, "prev_equity"):
             self.prev_equity = current_equity
-        delta = (current_equity - self.prev_equity) / max(self.initial_balance, 1e-8)
-        reward = float(np.clip(delta, -1.0, 1.0) * self.reward_scaling)
+        delta = np.log((current_equity + 1e-6) / (self.prev_equity + 1e-6))
+        reward = float(np.clip(delta * 100.0, -1.0, 1.0) * self.reward_scaling)
         self.prev_equity = current_equity
         reward -= (extra_penalty / max(self.initial_balance, 1e-8)) * self.reward_scaling
 
