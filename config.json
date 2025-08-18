@@ -11,7 +11,7 @@
   "initial_balance": 1000.0,
   "commission_rate": 0.0004,
   "slippage_rate": 0.0002,
-  "max_bars": 2000,
+  "max_bars": 512,
   "reward_scaling": 1.0,
   "penalize_no_trade_steps": true,
   "no_trade_penalty": 0.1,
