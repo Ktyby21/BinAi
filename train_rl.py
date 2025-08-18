@@ -24,7 +24,7 @@ from statistics import mean, median
 from tqdm import tqdm
 
 from stable_baselines3 import PPO
-from stable_baselines3.common.vec_env import DummyVecEnv
+from stable_baselines3.common.vec_env import DummyVecEnv, VecCheckNan
 from stable_baselines3.common.monitor import Monitor
 from stable_baselines3.common.callbacks import BaseCallback, CheckpointCallback
 from stable_baselines3.common.logger import configure as sb3_configure
@@ -173,7 +173,8 @@ def make_env_from_df(df: pd.DataFrame) -> DummyVecEnv:
         vol_ma_window=config["vol_ma_window"],
     )
     env = Monitor(env)  # важно: чтобы получать info['episode'] для метрик
-    return DummyVecEnv([lambda: env])
+    venv = DummyVecEnv([lambda: env])
+    return VecCheckNan(venv, raise_exception=True)
 
 
 def evaluate_once(model: PPO, env: HourlyTradingEnv) -> Dict[str, Any]:
@@ -207,7 +208,7 @@ def summarize_run(rows: List[Dict[str, Any]], initial_balance: float, save_dir: 
         return
 
     df = pd.DataFrame(rows)
-    df["roi"] = df["final_balance"] / float(initial_balance) - 1.0
+    df["roi"] = np.clip(df["final_balance"] / float(initial_balance) - 1.0, -10.0, 10.0)
 
     n = len(df)
     profitable_mask = df["final_balance"] > float(initial_balance)

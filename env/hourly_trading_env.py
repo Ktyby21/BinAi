@@ -139,7 +139,7 @@ class HourlyTradingEnv(gym.Env):
         net_exposure_ratio = np.clip(net_exposure_ratio, -5.0, 5.0)
         open_notional_ratio = np.clip(open_notional_ratio, 0.0, 5.0)
 
-        return np.array(
+        obs = np.array(
             [
                 equity_ratio,
                 ma_ratio,
@@ -150,6 +150,8 @@ class HourlyTradingEnv(gym.Env):
             ],
             dtype=np.float32,
         )
+        obs = np.nan_to_num(obs, nan=1.0, posinf=5.0, neginf=0.2)
+        return obs
 
     def _settle_trade(
         self,
@@ -173,9 +175,9 @@ class HourlyTradingEnv(gym.Env):
         else:
             cost = abs(size) * exec_price
             fee = cost * self.commission_rate
-            self.balance -= cost + fee
-            pnl_part = notional_part - cost - open_fee_part - fee
-
+            self.balance += (notional_part - cost - fee)
+            pnl_part = (notional_part - cost) - open_fee_part - fee
+        
         trade.pnl += pnl_part
         trade.notional -= notional_part
         trade.open_fee -= open_fee_part
@@ -211,13 +213,11 @@ class HourlyTradingEnv(gym.Env):
         return obs, info
 
     def step(self, action: np.ndarray):
-        open_long_frac, open_short_frac, close_fraction, sl_factor, tp_factor = (
-            float(action[0]),
-            float(action[1]),
-            float(action[2]),
-            float(action[3]),
-            float(action[4]),
-        )
+        open_long_frac = float(np.clip(action[0], 0.0, 1.0))
+        open_short_frac = float(np.clip(action[1], 0.0, 1.0))
+        close_fraction = float(np.clip(action[2], 0.0, 1.0))
+        sl_factor = float(np.clip(action[3], 0.5, 3.0))
+        tp_factor = float(np.clip(action[4], 0.5, 3.0))
 
         if self.current_bar >= self.n_bars:
             obs = self._get_obs()
@@ -290,11 +290,11 @@ class HourlyTradingEnv(gym.Env):
             invest_amount = self.balance * open_short_frac
             if invest_amount > 0:
                 entry_price = o * (1.0 - self.slippage_rate)
-                size_in_coins = -invest_amount / entry_price
+                size_in_coins = -invest_amount / max(entry_price, 1e-8)
                 sl_price = entry_price + sl_factor * atr_val
                 tp_price = entry_price - tp_factor * atr_val
                 fee = invest_amount * self.commission_rate
-                self.balance += invest_amount - fee
+                self.balance -= (invest_amount + fee)
                 new_trade = Trade(
                     direction='short',
                     entry_bar=bar_idx,
@@ -313,13 +313,13 @@ class HourlyTradingEnv(gym.Env):
         if no_trade_this_step and len(self.open_trades) > 0:
             no_trade_this_step = False
 
-        # penalty for no-trade: reduce balance
+        extra_penalty = 0.0
         if no_trade_this_step:
             self.consecutive_no_trade_steps += 1
             if self.penalize_no_trade_steps and len(self.open_trades) == 0:
-                self.balance -= self.no_trade_penalty
+                extra_penalty += self.no_trade_penalty
                 if self.consecutive_no_trade_steps > self.consecutive_no_trade_allowed:
-                    self.balance -= self.no_trade_penalty
+                    extra_penalty += self.no_trade_penalty
         else:
             self.consecutive_no_trade_steps = 0
 
@@ -331,7 +331,17 @@ class HourlyTradingEnv(gym.Env):
                 truncated = True
         if self.current_bar >= self.n_bars:
             terminated = True
-        if self.balance <= 0.0:
+
+        unrealized_check = 0.0
+        for t in self.open_trades:
+            if t.closed:
+                continue
+            if t.direction == 'long':
+                unrealized_check += (c - t.entry_price) * t.size_in_coins
+            else:
+                unrealized_check += (t.entry_price - c) * abs(t.size_in_coins)
+        current_equity_check = self.balance + unrealized_check
+        if current_equity_check <= 0.0 or self.balance <= 0.0:
             terminated = True
 
         info = {}
@@ -360,11 +370,10 @@ class HourlyTradingEnv(gym.Env):
         current_equity = self.balance + unrealized
         if not hasattr(self, 'prev_equity'):
             self.prev_equity = current_equity
-        reward = (current_equity - self.prev_equity) * self.reward_scaling
+        delta = (current_equity - self.prev_equity) / max(self.initial_balance, 1e-8)
+        reward = float(np.clip(delta, -1.0, 1.0) * self.reward_scaling)
         self.prev_equity = current_equity
-
-        if self.balance <= 0.0:
-            reward -= 1000.0 * self.reward_scaling
+        reward -= (extra_penalty / max(self.initial_balance, 1e-8)) * self.reward_scaling
 
         obs = self._get_obs()
         return obs, reward, terminated, truncated, info
