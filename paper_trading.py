@@ -50,8 +50,16 @@ def load_initial_data(symbol, interval, limit=2000):
     df["timestamp"] = pd.to_datetime(df["timestamp"], unit="ms")
     for col in ["open", "high", "low", "close", "volume"]:
         df[col] = df[col].astype(float)
-    df['hl_range'] = df['high'] - df['low']
-    df['atr'] = df['hl_range'].rolling(14).mean().bfill()
+    prev_close = df['close'].shift(1)
+    tr = pd.concat([
+        df['high'] - df['low'],
+        (df['high'] - prev_close).abs(),
+        (df['low'] - prev_close).abs()
+    ], axis=1).max(axis=1)
+    df['atr'] = tr.rolling(14).mean().bfill()
+    df['ma_short'] = df['close'].rolling(config["ma_short_window"]).mean().bfill()
+    df['ma_long'] = df['close'].rolling(config["ma_long_window"]).mean().bfill()
+    df['vol_ma'] = df['volume'].rolling(config["vol_ma_window"]).mean().bfill()
     return df
 
 def update_market_data(df):
@@ -71,8 +79,16 @@ def update_market_data(df):
         for col in ["open", "high", "low", "close", "volume"]:
             new_df[col] = new_df[col].astype(float)
         df = pd.concat([df, new_df]).drop_duplicates(subset="timestamp").reset_index(drop=True)
-        df['hl_range'] = df['high'] - df['low']
-        df['atr'] = df['hl_range'].rolling(14).mean().bfill()
+        prev_close = df['close'].shift(1)
+        tr = pd.concat([
+            df['high'] - df['low'],
+            (df['high'] - prev_close).abs(),
+            (df['low'] - prev_close).abs()
+        ], axis=1).max(axis=1)
+        df['atr'] = tr.rolling(14).mean().bfill()
+        df['ma_short'] = df['close'].rolling(config["ma_short_window"]).mean().bfill()
+        df['ma_long'] = df['close'].rolling(config["ma_long_window"]).mean().bfill()
+        df['vol_ma'] = df['volume'].rolling(config["vol_ma_window"]).mean().bfill()
     return df
 
 def save_trade_log(trade):
@@ -131,7 +147,7 @@ def main():
             last_retrain_time = current_time  # обновляем время последнего дообучения
 
         df = update_market_data(df)
-        env.df = df
+        env.update_data(df)
 
         action, _ = model.predict(obs, deterministic=True)
         logging.info(f"Predicted action: {action}")
