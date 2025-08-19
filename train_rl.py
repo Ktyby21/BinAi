@@ -171,6 +171,8 @@ def make_env_from_df(df: pd.DataFrame) -> DummyVecEnv:
         ma_short_window=config["ma_short_window"],
         ma_long_window=config["ma_long_window"],
         vol_ma_window=config["vol_ma_window"],
+        risk_fraction=config.get("risk_fraction", 0.01),
+        max_alloc_per_trade=config.get("max_alloc_per_trade", 0.3),
     )
     env = Monitor(env)  # важно: чтобы получать info['episode'] для метрик
     venv = DummyVecEnv([lambda: env])
