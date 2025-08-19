@@ -5,13 +5,21 @@ train_rl_all_pairs.py
 - Читаем CSV чанками, фильтруем по symbol (чтобы не грузить весь файл в RAM).
 - По каждой паре показываем «живой» прогресс в одной строке:
   train[SYMBOL] ... FPS=... ETA=... lastR=... avgR=... eps=...
-- После КАЖДОЙ пары сохраняем модель и короткую сводку в logs/training_summary.csv.
-- Логи для TensorBoard: ./tensorboard_logs  (запуск: `tensorboard --logdir ./tensorboard_logs`)
+- После КАЖДОЙ пары сохраняем модель и сводку в runs/logs/training_summary.csv.
+- Логи для TensorBoard: runs/tensorboard  (запуск: `tensorboard --logdir runs/tensorboard`)
 
 Требуется: pandas, tqdm, numpy, stable_baselines3, gymnasium (твоя env), (опц.) tensorboard.
 """
 
+import warnings
+
+# Убираем спам варнингов от protobuf (до импорта сторонних библиотек)
+warnings.filterwarnings(
+    "ignore", message="Protobuf gencode version", category=UserWarning
+)
+
 import os
+os.environ.setdefault("TF_CPP_MIN_LOG_LEVEL", "2")
 import gc
 import time
 import json
@@ -36,11 +44,14 @@ from env.hourly_trading_env import HourlyTradingEnv  # твоя среда
 with open("config.json", "r") as f:
     config = json.load(f)
 
-MODEL_PATH = "ppo_hourly_model.zip"
-LOG_DIR = "./logs"
-TB_DIR = "./tensorboard_logs"
-os.makedirs(LOG_DIR, exist_ok=True)
-os.makedirs(TB_DIR, exist_ok=True)
+ARTIFACTS_DIR = "./runs"
+LOG_DIR = os.path.join(ARTIFACTS_DIR, "logs")
+TB_DIR = os.path.join(ARTIFACTS_DIR, "tensorboard")
+CHECKPOINT_DIR = os.path.join(ARTIFACTS_DIR, "checkpoints")
+MODEL_PATH = os.path.join(ARTIFACTS_DIR, "ppo_hourly_model.zip")
+
+for d in (LOG_DIR, TB_DIR, CHECKPOINT_DIR):
+    os.makedirs(d, exist_ok=True)
 
 PER_SYMBOL_TIMESTEPS = int(config.get("per_symbol_timesteps", config.get("learn_timesteps", 10_000)))
 SLEEP_BETWEEN = float(config.get("sleep_between_symbols_sec", 2))
@@ -346,8 +357,11 @@ def main():
     print("Пример:", symbols[:10])
 
     # чекпоинты (по глобальному счётчику шагов)
-    os.makedirs("./checkpoints", exist_ok=True)
-    checkpoint_cb = CheckpointCallback(save_freq=CHECKPOINT_FREQ, save_path="./checkpoints", name_prefix="ppo_hourly")
+    checkpoint_cb = CheckpointCallback(
+        save_freq=CHECKPOINT_FREQ,
+        save_path=CHECKPOINT_DIR,
+        name_prefix="ppo_hourly",
+    )
 
     # первая пара — чтобы инициализировать модель/логгер
     first_df = load_one_symbol_csv(CSV_PATH, symbols[0])

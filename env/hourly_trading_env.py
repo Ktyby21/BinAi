@@ -15,6 +15,14 @@ from trade import Trade
 
 
 class HourlyTradingEnv(gym.Env):
+    @staticmethod
+    def _log_ratio(num: float, den: float, eps: float = 1e-12) -> float:
+        """Return log(num/den) with safeguards for zeros.
+
+        Both numerator and denominator are clamped below by ``eps`` to avoid
+        divisions by zero and ``log(0)`` warnings.
+        """
+        return float(np.log(max(num, eps)) - np.log(max(den, eps)))
     def __init__(
         self,
         df: pd.DataFrame,
@@ -133,10 +141,12 @@ class HourlyTradingEnv(gym.Env):
 
         equity_ratio = (self.balance + unrealized) / max(self.initial_balance, 1e-8)
 
-        # Лог-нормализация (scale-invariant)
-        ma_log = np.clip(np.log(ma_short / (ma_long + 1e-8)), -3.0, 3.0)
-        price_log = np.clip(np.log(current_price / (ma_short + 1e-8)), -3.0, 3.0)
-        vol_log = np.clip(np.log(row["volume"] / (vol_ma + 1e-8)), -3.0, 3.0)
+        # Лог-нормализация (scale-invariant) через безопасный log-ratio
+        ma_log = np.clip(self._log_ratio(ma_short, ma_long), -3.0, 3.0)
+        price_log = np.clip(self._log_ratio(current_price, ma_short), -3.0, 3.0)
+        vol_log = np.clip(
+            self._log_ratio(float(row["volume"]), vol_ma), -3.0, 3.0
+        )
 
         net_exposure_ratio = np.clip(
             net_notional / max(self.initial_balance, 1e-8), -5.0, 5.0

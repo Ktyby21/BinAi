@@ -14,6 +14,7 @@ This repository demonstrates how to train a reinforcement learning (RL) agent us
   - Creates and wraps the environment.
   - Trains a PPO agent.
   - Runs a quick test and prints final results.
+  - Stores checkpoints, logs and TensorBoard data under `runs/`.
 
 ---
 
@@ -81,7 +82,7 @@ python train_rl.py
 ### Monitor Logs
 - Check training progress in the console or via TensorBoard:
   ```bash
-  tensorboard --logdir ./tensorboard_logs/
+  tensorboard --logdir ./runs/tensorboard/
   ```
 
 ### Analyze Results
@@ -91,7 +92,7 @@ python train_rl.py
 
 ## Output
 
-- **Trained Model**: Saved to `ppo_hourly_model.zip` for future use.
+- **Trained Model**: Saved to `runs/ppo_hourly_model.zip` for future use.
 - **Reports**:
   - **Detailed Report**: Logs individual trade metrics, including timestamps, thresholds, positions, and balances.
   - **Summary Report**: Aggregates metrics like total trades, success rates, and final balance.

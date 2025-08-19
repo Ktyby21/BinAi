@@ -1,10 +1,12 @@
 venv/
-tensorboard_logs/
+runs/
 __pycache__/
 ppo_hourly_model*
 *.csv
 *.DS_Store
 test.py
 *.log
+# legacy dirs
 logs/
+tensorboard_logs/
 checkpoints/
