@@ -40,6 +40,7 @@ class HourlyTradingEnv(gym.Env):
         vol_ma_window: int = 24,
         risk_fraction: float = 0.01,
         max_alloc_per_trade: float = 0.3,
+        min_notional: float = 1.0,
     ):
         super().__init__()
 
@@ -59,6 +60,7 @@ class HourlyTradingEnv(gym.Env):
         self.vol_ma_window = vol_ma_window
         self.risk_fraction = risk_fraction
         self.max_alloc_per_trade = max_alloc_per_trade
+        self.min_notional = min_notional
 
         self.update_data(df)
 
@@ -85,28 +87,25 @@ class HourlyTradingEnv(gym.Env):
     def update_data(self, df: pd.DataFrame):
         """Recompute indicators and reset internal dataframe."""
         self.df = df.reset_index(drop=True)
-        self.n_bars = len(self.df)
 
-        prev_close = self.df['close'].shift(1)
+        prev_close = self.df["close"].shift(1)
         tr = pd.concat(
             [
-                self.df['high'] - self.df['low'],
-                (self.df['high'] - prev_close).abs(),
-                (self.df['low'] - prev_close).abs(),
+                self.df["high"] - self.df["low"],
+                (self.df["high"] - prev_close).abs(),
+                (self.df["low"] - prev_close).abs(),
             ],
             axis=1,
         ).max(axis=1)
-        self.df['atr'] = tr.rolling(14).mean().bfill()
+        self.df["atr"] = tr.rolling(14).mean()
 
-        self.df['ma_short'] = (
-            self.df['close'].rolling(self.ma_short_window).mean().bfill()
-        )
-        self.df['ma_long'] = (
-            self.df['close'].rolling(self.ma_long_window).mean().bfill()
-        )
-        self.df['vol_ma'] = (
-            self.df['volume'].rolling(self.vol_ma_window).mean().bfill()
-        )
+        self.df["ma_short"] = self.df["close"].rolling(self.ma_short_window).mean()
+        self.df["ma_long"] = self.df["close"].rolling(self.ma_long_window).mean()
+        self.df["vol_ma"] = self.df["volume"].rolling(self.vol_ma_window).mean()
+
+        self.df.dropna(inplace=True)
+        self.df.reset_index(drop=True, inplace=True)
+        self.n_bars = len(self.df)
 
     def _get_total_coins(self) -> float:
         total = 0.0
@@ -139,26 +138,18 @@ class HourlyTradingEnv(gym.Env):
                 unrealized += (t.entry_price - current_price) * abs(t.size_in_coins)
                 net_notional -= t.notional
 
-        equity_ratio = (self.balance + unrealized) / max(self.initial_balance, 1e-8)
+        equity_log = self._log_ratio(self.balance + unrealized, self.initial_balance)
 
-        # Лог-нормализация (scale-invariant) через безопасный log-ratio
-        ma_log = np.clip(self._log_ratio(ma_short, ma_long), -3.0, 3.0)
-        price_log = np.clip(self._log_ratio(current_price, ma_short), -3.0, 3.0)
-        vol_log = np.clip(
-            self._log_ratio(float(row["volume"]), vol_ma), -3.0, 3.0
-        )
+        ma_log = self._log_ratio(ma_short, ma_long)
+        price_log = self._log_ratio(current_price, ma_short)
+        vol_log = self._log_ratio(float(row["volume"]), vol_ma)
 
-        net_exposure_ratio = np.clip(
-            net_notional / max(self.initial_balance, 1e-8), -5.0, 5.0
-        )
-        open_notional_ratio = np.clip(
-            total_notional / max(self.initial_balance, 1e-8), 0.0, 5.0
-        )
-        equity_ratio = np.clip(equity_ratio, 0.2, 5.0)
+        net_exposure_ratio = net_notional / max(self.initial_balance, 1e-8)
+        open_notional_ratio = total_notional / max(self.initial_balance, 1e-8)
 
         obs = np.array(
             [
-                equity_ratio,
+                equity_log,
                 ma_log,
                 price_log,
                 vol_log,
@@ -167,7 +158,6 @@ class HourlyTradingEnv(gym.Env):
             ],
             dtype=np.float32,
         )
-        obs = np.nan_to_num(obs, nan=0.0, posinf=3.0, neginf=-3.0)
         return obs
 
     def _settle_trade(
@@ -212,7 +202,7 @@ class HourlyTradingEnv(gym.Env):
         self.balance = self.initial_balance
         self.prev_equity = self.initial_balance
 
-        min_start = self.window_size
+        min_start = 0
 
         # Guarantee training horizon away from dataset end
         horizon = int(self.max_bars) if self.max_bars is not None else 512
@@ -272,7 +262,6 @@ class HourlyTradingEnv(gym.Env):
         # ===== 3) Possibly open trades (risk-based sizing) =====
         no_trade_this_step = True
         max_alloc = float(self.max_alloc_per_trade)
-        MIN_NOTIONAL = 1.0
 
         # Текущая equity (для риска)
         unrealized_eq = 0.0
@@ -296,7 +285,7 @@ class HourlyTradingEnv(gym.Env):
             entry_price = o * (1.0 + self.slippage_rate)
             notional = abs(size_in_coins * entry_price)
             notional = min(notional, self.balance * max_alloc)
-            if notional < MIN_NOTIONAL:
+            if notional < self.min_notional:
                 return
             fee_open = notional * self.commission_rate
             if notional > 0 and self.balance >= notional + fee_open:
@@ -327,7 +316,7 @@ class HourlyTradingEnv(gym.Env):
             entry_price = o * (1.0 - self.slippage_rate)
             notional = abs(size_in_coins * entry_price)
             notional = min(notional, self.balance * max_alloc)
-            if notional < MIN_NOTIONAL:
+            if notional < self.min_notional:
                 return
             fee_open = notional * self.commission_rate
             if notional > 0 and self.balance >= notional + fee_open:
@@ -408,7 +397,7 @@ class HourlyTradingEnv(gym.Env):
         if not hasattr(self, "prev_equity"):
             self.prev_equity = current_equity
         delta = np.log((current_equity + 1e-6) / (self.prev_equity + 1e-6))
-        reward = float(np.clip(delta * 100.0, -1.0, 1.0) * self.reward_scaling)
+        reward = float(delta * 100.0 * self.reward_scaling)
         self.prev_equity = current_equity
 
         reward -= (extra_penalty / max(self.initial_balance, 1e-8)) * self.reward_scaling
