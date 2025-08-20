@@ -32,7 +32,7 @@ from statistics import mean, median
 from tqdm import tqdm
 
 from stable_baselines3 import PPO
-from stable_baselines3.common.vec_env import DummyVecEnv, VecCheckNan
+from stable_baselines3.common.vec_env import DummyVecEnv, VecNormalize
 from stable_baselines3.common.monitor import Monitor
 from stable_baselines3.common.callbacks import BaseCallback, CheckpointCallback
 from stable_baselines3.common.logger import configure as sb3_configure
@@ -49,6 +49,7 @@ LOG_DIR = os.path.join(ARTIFACTS_DIR, "logs")
 TB_DIR = os.path.join(ARTIFACTS_DIR, "tensorboard")
 CHECKPOINT_DIR = os.path.join(ARTIFACTS_DIR, "checkpoints")
 MODEL_PATH = os.path.join(ARTIFACTS_DIR, "ppo_hourly_model.zip")
+VECNORM_PATH = os.path.join(ARTIFACTS_DIR, "vecnorm.pkl")
 
 for d in (LOG_DIR, TB_DIR, CHECKPOINT_DIR):
     os.makedirs(d, exist_ok=True)
@@ -162,7 +163,7 @@ def load_one_symbol_csv(path: str, symbol: str, chunk_size: int = 1_000_000) -> 
     return df
 
 
-def make_env_from_df(df: pd.DataFrame) -> DummyVecEnv:
+def make_env_from_df(df: pd.DataFrame, training: bool = True) -> VecNormalize:
     required = {"timestamp", "open", "high", "low", "close", "volume"}
     miss = required - set(df.columns)
     if miss:
@@ -184,28 +185,35 @@ def make_env_from_df(df: pd.DataFrame) -> DummyVecEnv:
         vol_ma_window=config["vol_ma_window"],
         risk_fraction=config.get("risk_fraction", 0.01),
         max_alloc_per_trade=config.get("max_alloc_per_trade", 0.3),
+        min_notional=config.get("min_notional", 1.0),
     )
-    env = Monitor(env)  # важно: чтобы получать info['episode'] для метрик
+    env = Monitor(env)
     venv = DummyVecEnv([lambda: env])
-    return VecCheckNan(venv, raise_exception=True)
+    vec_env = VecNormalize(venv, norm_obs=True, norm_reward=True, clip_obs=1e6, clip_reward=1e6)
+    vec_env.training = training
+    return vec_env
 
 
-def evaluate_once(model: PPO, env: HourlyTradingEnv) -> Dict[str, Any]:
-    obs, info = env.reset()
+def evaluate_once(model: PPO, env: VecNormalize) -> Dict[str, Any]:
+    # ненормализованные награды при оценке
+    env.training = False
+    env.norm_reward = False
+    obs = env.reset()
     done = False
     total_reward = 0.0
     steps = 0
     while not done:
         action, _ = model.predict(obs, deterministic=True)
-        obs, reward, terminated, truncated, info = env.step(action)
-        total_reward += float(reward)
-        done = terminated or truncated
+        obs, reward, done_vec, _ = env.step(action)
+        total_reward += float(reward[0])
+        done = bool(done_vec[0])
         steps += 1
-    closed_trades = [t for t in getattr(env, "trade_log", []) if getattr(t, "closed", False)]
+    base_env: HourlyTradingEnv = env.venv.envs[0].env
+    closed_trades = [t for t in getattr(base_env, "trade_log", []) if getattr(t, "closed", False)]
     return {
         "steps": steps,
         "total_reward": total_reward,
-        "final_balance": float(getattr(env, "balance", float("nan"))),
+        "final_balance": float(getattr(base_env, "balance", float("nan"))),
         "closed_trades": len(closed_trades),
     }
 
@@ -365,7 +373,10 @@ def main():
 
     # первая пара — чтобы инициализировать модель/логгер
     first_df = load_one_symbol_csv(CSV_PATH, symbols[0])
-    vec_env = make_env_from_df(first_df)
+    vec_env = make_env_from_df(first_df, training=True)
+    if os.path.isfile(VECNORM_PATH):
+        vec_env = VecNormalize.load(VECNORM_PATH, vec_env)
+        vec_env.training = True
 
     # создаём/грузим модель, без спама в консоль
     if os.path.isfile(MODEL_PATH):
@@ -392,7 +403,9 @@ def main():
                 tqdm.write(f"[skip] {sym}: мало данных ({len(df)})")
                 continue
 
-            vec_env = make_env_from_df(df)
+            vec_env.venv.envs[0].env.update_data(df)
+            vec_env.training = True
+            vec_env.reset()
             model.set_env(vec_env)
 
             # прогресс по текущей паре
@@ -407,25 +420,16 @@ def main():
 
             # сохраняем модель после каждой пары
             model.save(MODEL_PATH)
-            tqdm.write(f"[saved] {MODEL_PATH}")
+            vec_env.save(VECNORM_PATH)
+            tqdm.write(f"[saved] {MODEL_PATH} / {VECNORM_PATH}")
 
             # мини-оценка и сводка
-            test_env = HourlyTradingEnv(
-                df=df,
-                window_size=config["window_size"],
-                initial_balance=config["initial_balance"],
-                commission_rate=config["commission_rate"],
-                slippage_rate=config["slippage_rate"],
-                max_bars=config["max_bars"],
-                reward_scaling=config["reward_scaling"],
-                penalize_no_trade_steps=config["penalize_no_trade_steps"],
-                no_trade_penalty=config["no_trade_penalty"],
-                consecutive_no_trade_allowed=config["consecutive_no_trade_allowed"],
-                ma_short_window=config["ma_short_window"],
-                ma_long_window=config["ma_long_window"],
-                vol_ma_window=config["vol_ma_window"],
-            )
-            summary = evaluate_once(model, test_env)
+            eval_env = make_env_from_df(df, training=False)
+            if os.path.isfile(VECNORM_PATH):
+                eval_env = VecNormalize.load(VECNORM_PATH, eval_env)
+            eval_env.training = False
+            eval_env.norm_reward = False
+            summary = evaluate_once(model, eval_env)
             summary_row = {
                 "symbol": sym,
                 "timesteps": PER_SYMBOL_TIMESTEPS,
@@ -449,7 +453,6 @@ def main():
             tqdm.write(f"[error] {sym}: {e}")
         finally:
             # подчистка
-            del vec_env
             gc.collect()
     summarize_run(run_rows, initial_balance=config["initial_balance"], save_dir=LOG_DIR, run_name=run_name)
     print(f"\nГотово.\nСводка: {SUMMARY_CSV}\nTensorBoard: {TB_DIR}  (запуск: tensorboard --logdir={TB_DIR})")
