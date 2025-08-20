@@ -138,7 +138,10 @@ class HourlyTradingEnv(gym.Env):
                 unrealized += (t.entry_price - current_price) * abs(t.size_in_coins)
                 net_notional -= t.notional
 
-        equity_log = self._log_ratio(self.balance + unrealized, self.initial_balance)
+        # equity учитывает стоимость открытых позиций (симметрично лонгам и шортам)
+        equity_log = self._log_ratio(
+            self.balance + unrealized + total_notional, self.initial_balance
+        )
 
         ma_log = self._log_ratio(ma_short, ma_long)
         price_log = self._log_ratio(current_price, ma_short)
@@ -238,35 +241,64 @@ class HourlyTradingEnv(gym.Env):
         bar_idx = self.current_bar
 
         # ===== 1) SL/TP =====
+        any_settlement = False
         for trade in self.open_trades:
             if trade.closed:
                 continue
             if trade.direction == "long":
                 if l <= trade.stop_loss:
-                    self._settle_trade(trade, trade.stop_loss * (1.0 - self.slippage_rate), bar_idx)
+                    self._settle_trade(
+                        trade,
+                        trade.stop_loss * (1.0 - self.slippage_rate),
+                        bar_idx,
+                    )
+                    any_settlement = True
                 elif h >= trade.take_profit:
-                    self._settle_trade(trade, trade.take_profit * (1.0 - self.slippage_rate), bar_idx)
+                    self._settle_trade(
+                        trade,
+                        trade.take_profit * (1.0 - self.slippage_rate),
+                        bar_idx,
+                    )
+                    any_settlement = True
             else:
                 if h >= trade.stop_loss:
-                    self._settle_trade(trade, trade.stop_loss * (1.0 + self.slippage_rate), bar_idx)
+                    self._settle_trade(
+                        trade,
+                        trade.stop_loss * (1.0 + self.slippage_rate),
+                        bar_idx,
+                    )
+                    any_settlement = True
                 elif l <= trade.take_profit:
-                    self._settle_trade(trade, trade.take_profit * (1.0 + self.slippage_rate), bar_idx)
+                    self._settle_trade(
+                        trade,
+                        trade.take_profit * (1.0 + self.slippage_rate),
+                        bar_idx,
+                    )
+                    any_settlement = True
 
         # ===== 2) Partial close =====
         if close_fraction > 1e-8:
             for trade in self.open_trades:
                 if trade.closed:
                     continue
-                px = c * (1.0 - self.slippage_rate) if trade.direction == "long" else c * (1.0 + self.slippage_rate)
+                px = (
+                    c * (1.0 - self.slippage_rate)
+                    if trade.direction == "long"
+                    else c * (1.0 + self.slippage_rate)
+                )
                 self._settle_trade(trade, px, bar_idx, proportion=close_fraction)
+                any_settlement = True
+
+        # Уберём закрытые из списка активных
+        if any_settlement:
+            self.open_trades = [t for t in self.open_trades if not t.closed]
 
         # ===== 3) Possibly open trades (risk-based sizing) =====
-        no_trade_this_step = True
         max_alloc = float(self.max_alloc_per_trade)
 
         # Текущая equity (для риска)
         unrealized_eq = 0.0
-        short_reserve = 0.0
+        reserve_total = 0.0
         for t in self.open_trades:
             if t.closed:
                 continue
@@ -274,11 +306,10 @@ class HourlyTradingEnv(gym.Env):
                 unrealized_eq += (c - t.entry_price) * t.size_in_coins
             else:
                 unrealized_eq += (t.entry_price - c) * abs(t.size_in_coins)
-                short_reserve += t.notional
-        equity = self.balance + unrealized_eq + short_reserve
+            reserve_total += t.notional
+        equity = self.balance + unrealized_eq + reserve_total
 
         def open_long(risk_scale: float):
-            nonlocal no_trade_this_step
             if sl_factor * atr_val <= 1e-8:
                 return
             dollar_risk = max(0.0, equity * self.risk_fraction * risk_scale)
@@ -306,10 +337,8 @@ class HourlyTradingEnv(gym.Env):
                 )
                 self.open_trades.append(new_trade)
                 self.trade_log.append(new_trade)
-                no_trade_this_step = False
 
         def open_short(risk_scale: float):
-            nonlocal no_trade_this_step
             if sl_factor * atr_val <= 1e-8:
                 return
             dollar_risk = max(0.0, equity * self.risk_fraction * risk_scale)
@@ -337,19 +366,17 @@ class HourlyTradingEnv(gym.Env):
                 )
                 self.open_trades.append(new_trade)
                 self.trade_log.append(new_trade)
-                no_trade_this_step = False
 
         net = open_long_frac - open_short_frac
         if abs(net) > 1e-3:
             (open_long if net > 0 else open_short)(abs(net))
-        elif len(self.open_trades) > 0:
-            no_trade_this_step = False
 
-        # Штраф за бездействие без позиции
+        # Штраф за отсутствие АКТИВНЫХ позиций
         extra_penalty = 0.0
-        if no_trade_this_step:
+        active_open = sum(1 for t in self.open_trades if not t.closed)
+        if active_open == 0:
             self.consecutive_no_trade_steps += 1
-            if self.penalize_no_trade_steps and len(self.open_trades) == 0:
+            if self.penalize_no_trade_steps:
                 extra_penalty += self.no_trade_penalty
                 if self.consecutive_no_trade_steps > self.consecutive_no_trade_allowed:
                     extra_penalty += self.no_trade_penalty
@@ -366,7 +393,7 @@ class HourlyTradingEnv(gym.Env):
             terminated = True
 
         unrealized = 0.0
-        short_reserve = 0.0
+        reserve_total = 0.0
         for t in self.open_trades:
             if t.closed:
                 continue
@@ -374,8 +401,8 @@ class HourlyTradingEnv(gym.Env):
                 unrealized += (c - t.entry_price) * t.size_in_coins
             else:
                 unrealized += (t.entry_price - c) * abs(t.size_in_coins)
-                short_reserve += t.notional
-        current_equity = self.balance + unrealized + short_reserve
+            reserve_total += t.notional
+        current_equity = self.balance + unrealized + reserve_total
 
         if self.balance <= 0.0 or current_equity <= 0.0:
             terminated = True
@@ -394,7 +421,7 @@ class HourlyTradingEnv(gym.Env):
             # поэтому equity совпадает с текущим балансом
             current_equity = self.balance
 
-        # ===== Reward: лог-доходность портфеля (equity включает резерв шортов)
+        # ===== Reward: лог-доходность портфеля (equity учитывает стоимость открытых позиций)
         if not hasattr(self, "prev_equity"):
             self.prev_equity = current_equity
         delta = np.log((current_equity + 1e-6) / (self.prev_equity + 1e-6))
