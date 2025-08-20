@@ -211,10 +211,29 @@ def evaluate_once(model: PPO, env: VecNormalize) -> Dict[str, Any]:
         if done:
             summary = infos[0].get("episode_summary", {})
         steps += 1
+    # ← Fallback на случай, если episode_summary не пришёл
+    try:
+        base_env: HourlyTradingEnv = env.venv.envs[0].env  # VecNormalize -> DummyVecEnv -> Monitor -> HourlyTradingEnv
+        trade_log = getattr(base_env, "trade_log", [])
+        fallback = {
+            "final_balance": float(getattr(base_env, "balance", float("nan"))),
+            "trades_opened": len(trade_log),
+            "trades_closed": sum(1 for t in trade_log if getattr(t, "closed", False)),
+        }
+    except Exception:
+        fallback = {}
+
+    # Итог: всегда есть нужные ключи
     return {
         "steps": steps,
         "total_reward": total_reward,
-        **summary,
+        "final_balance": summary.get("final_balance", fallback.get("final_balance")),
+        "trades_opened": summary.get("trades_opened", fallback.get("trades_opened")),
+        "trades_closed": summary.get("trades_closed", fallback.get("trades_closed")),
+        "gross_pnl": summary.get("gross_pnl"),
+        "net_pnl": summary.get("net_pnl"),
+        "penalty_total": summary.get("penalty_total"),
+        "forced_close_pnl": summary.get("forced_close_pnl", 0.0),
     }
 
 
@@ -249,8 +268,8 @@ def summarize_run(rows: List[Dict[str, Any]], initial_balance: float, save_dir: 
         "roi_std": float(df["roi"].std(ddof=0)),
         "profitable_pairs": int(profitable_mask.sum()),
         "profitable_share": float(profitable_mask.mean()),
-        "closed_trades_total": int(df["closed_trades"].sum()),
-        "closed_trades_mean": float(df["closed_trades"].mean()),
+        "trades_closed_total": int(df["trades_closed"].sum()),
+        "trades_closed_mean": float(df["trades_closed"].mean()),
     }
 
     # Лучшие/худшие по финальному балансу
@@ -260,11 +279,11 @@ def summarize_run(rows: List[Dict[str, Any]], initial_balance: float, save_dir: 
         "best_symbol": str(best_row["symbol"]),
         "best_final_balance": float(best_row["final_balance"]),
         "best_reward": float(best_row["total_reward"]),
-        "best_closed_trades": int(best_row["closed_trades"]),
+        "best_trades_closed": int(best_row["trades_closed"]),
         "worst_symbol": str(worst_row["symbol"]),
         "worst_final_balance": float(worst_row["final_balance"]),
         "worst_reward": float(worst_row["total_reward"]),
-        "worst_closed_trades": int(worst_row["closed_trades"]),
+        "worst_trades_closed": int(worst_row["trades_closed"]),
     })
 
     # Печать в консоль — аккуратная сводка
@@ -276,9 +295,9 @@ def summarize_run(rows: List[Dict[str, Any]], initial_balance: float, save_dir: 
     print(f"Средн. фин. баланс: {metrics['final_balance_mean']:.2f}  | медиана: {metrics['final_balance_median']:.2f}  | σ: {metrics['final_balance_std']:.2f}")
     print(f"Средн. ROI: {metrics['roi_mean']*100:.2f}%  | медиана ROI: {metrics['roi_median']*100:.2f}%  | σ ROI: {metrics['roi_std']*100:.2f}%")
     print(f"Профитных пар: {metrics['profitable_pairs']}/{metrics['n_pairs']}  ({metrics['profitable_share']*100:.1f}%)")
-    print(f"Сделок всего: {metrics['closed_trades_total']:,}  | в среднем на пару: {metrics['closed_trades_mean']:.1f}")
-    print(f"Лучшее:  {metrics['best_symbol']}  баланс={metrics['best_final_balance']:.2f}  reward={metrics['best_reward']:.2f}  trades={metrics['best_closed_trades']}")
-    print(f"Худшее:  {metrics['worst_symbol']} баланс={metrics['worst_final_balance']:.2f} reward={metrics['worst_reward']:.2f} trades={metrics['worst_closed_trades']}")
+    print(f"Сделок всего: {metrics['trades_closed_total']:,}  | в среднем на пару: {metrics['trades_closed_mean']:.1f}")
+    print(f"Лучшее:  {metrics['best_symbol']}  баланс={metrics['best_final_balance']:.2f}  reward={metrics['best_reward']:.2f}  trades={metrics['best_trades_closed']}")
+    print(f"Худшее:  {metrics['worst_symbol']} баланс={metrics['worst_final_balance']:.2f} reward={metrics['worst_reward']:.2f} trades={metrics['worst_trades_closed']}")
 
     # Сохранения: подробный CSV по парам + JSON со сводкой
     os.makedirs(save_dir, exist_ok=True)
@@ -436,10 +455,14 @@ def main():
                 **summary
             }
             append_summary_row(SUMMARY_CSV, summary_row)
-            tqdm.write(f"[summary] {sym}: steps={summary['steps']}, "
-                       f"reward={summary['total_reward']:.2f}, "
-                       f"final_balance={summary['final_balance']:.2f}, "
-                       f"closed_trades={summary['closed_trades']}")
+            tqdm.write(
+                f"[summary] {sym}: "
+                f"steps={summary.get('steps')}, "
+                f"reward={summary.get('total_reward', float('nan')):.2f}, "
+                f"final_balance={summary.get('final_balance', float('nan')):.2f}, "
+                f"trades_opened={summary.get('trades_opened', 'n/a')}, "
+                f"trades_closed={summary.get('trades_closed', 'n/a')}"
+            )
             run_rows.append(summary_row)
             # «перерыв», если нужен
             if SLEEP_BETWEEN > 0:
