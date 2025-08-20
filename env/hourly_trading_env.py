@@ -201,6 +201,7 @@ class HourlyTradingEnv(gym.Env):
         self.consecutive_no_trade_steps = 0
         self.balance = self.initial_balance
         self.prev_equity = self.initial_balance
+        self.penalty_total = 0.0
 
         min_start = 0
 
@@ -400,7 +401,22 @@ class HourlyTradingEnv(gym.Env):
         reward = float(delta * 100.0 * self.reward_scaling)
         self.prev_equity = current_equity
 
+        self.penalty_total += extra_penalty
         reward -= (extra_penalty / max(self.initial_balance, 1e-8)) * self.reward_scaling
+
+        if terminated or truncated:
+            gross_pnl = float(sum(t.pnl for t in self.trade_log))
+            net_pnl = gross_pnl - self.penalty_total
+            info["episode_summary"] = {
+                "final_balance": self.balance,
+                "trades_opened": len(self.trade_log),
+                "trades_closed": sum(1 for t in self.trade_log if t.closed),
+                "gross_pnl": gross_pnl,
+                "net_pnl": net_pnl,
+                "penalty_total": self.penalty_total,
+                "forced_close_pnl": info.get("forced_close_pnl", 0.0),
+            }
+
         return self._get_obs(), reward, terminated, truncated, info
 
     def render(self):

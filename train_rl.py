@@ -202,19 +202,19 @@ def evaluate_once(model: PPO, env: VecNormalize) -> Dict[str, Any]:
     done = False
     total_reward = 0.0
     steps = 0
+    summary: Dict[str, Any] = {}
     while not done:
         action, _ = model.predict(obs, deterministic=True)
-        obs, reward, done_vec, _ = env.step(action)
+        obs, reward, done_vec, infos = env.step(action)
         total_reward += float(reward[0])
         done = bool(done_vec[0])
+        if done:
+            summary = infos[0].get("episode_summary", {})
         steps += 1
-    base_env: HourlyTradingEnv = env.venv.envs[0].env
-    closed_trades = [t for t in getattr(base_env, "trade_log", []) if getattr(t, "closed", False)]
     return {
         "steps": steps,
         "total_reward": total_reward,
-        "final_balance": float(getattr(base_env, "balance", float("nan"))),
-        "closed_trades": len(closed_trades),
+        **summary,
     }
 
 
