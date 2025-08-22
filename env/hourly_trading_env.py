@@ -23,6 +23,10 @@ class HourlyTradingEnv(gym.Env):
         divisions by zero and ``log(0)`` warnings.
         """
         return float(np.log(max(num, eps)) - np.log(max(den, eps)))
+
+    @staticmethod
+    def _finite(x: float) -> float:
+        return float(x) if np.isfinite(x) else 0.0
     def __init__(
         self,
         df: pd.DataFrame,
@@ -41,6 +45,9 @@ class HourlyTradingEnv(gym.Env):
         risk_fraction: float = 0.01,
         max_alloc_per_trade: float = 0.3,
         min_notional: float = 1.0,
+        # NEW:
+        atr_window: int = 14,
+        rsi_window: int = 14,
     ):
         super().__init__()
 
@@ -62,6 +69,10 @@ class HourlyTradingEnv(gym.Env):
         self.max_alloc_per_trade = max_alloc_per_trade
         self.min_notional = min_notional
 
+        # NEW:
+        self.atr_window = atr_window
+        self.rsi_window = rsi_window
+
         self.update_data(df)
 
         # Internal states
@@ -72,10 +83,11 @@ class HourlyTradingEnv(gym.Env):
         self.trade_log: List[Trade] = []
         self.consecutive_no_trade_steps = 0
 
-        # Observation: [equity_ratio, ma_log, price_log, vol_log,
-        #               net_exposure_ratio, open_notional_ratio]
+        # Observation:
+        # [equity_log, ma_log, price_log, vol_log, atr_pct, rsi_c,
+        #  net_exposure_ratio, open_notional_ratio]
         self.observation_space = spaces.Box(
-            low=-np.inf, high=np.inf, shape=(6,), dtype=np.float32
+            low=-np.inf, high=np.inf, shape=(8,), dtype=np.float32
         )
 
         # [open_long_frac, open_short_frac, close_fraction, sl_factor, tp_factor]
@@ -83,6 +95,17 @@ class HourlyTradingEnv(gym.Env):
             low=np.array([0, 0, 0, 0, 0], dtype=np.float32),
             high=np.array([1, 1, 1, 3, 3], dtype=np.float32),
         )
+
+    def _rsi(self, s: pd.Series, n: int) -> pd.Series:
+        diff = s.diff()
+        up = diff.clip(lower=0.0)
+        down = -diff.clip(upper=0.0)
+        # Wilder smoothing (EMA с alpha=1/n)
+        roll_up = up.ewm(alpha=1.0 / n, adjust=False).mean()
+        roll_down = down.ewm(alpha=1.0 / n, adjust=False).mean()
+        rs = roll_up / roll_down.replace(0.0, 1e-12)
+        rsi = 100.0 - (100.0 / (1.0 + rs))
+        return rsi
 
     def update_data(self, df: pd.DataFrame):
         """Recompute indicators and reset internal dataframe."""
@@ -97,13 +120,23 @@ class HourlyTradingEnv(gym.Env):
             ],
             axis=1,
         ).max(axis=1)
-        self.df["atr"] = tr.rolling(14).mean()
 
+        # ATR и ATR%
+        self.df["atr"] = tr.rolling(self.atr_window).mean()
+        self.df["atr_pct"] = (self.df["atr"] / self.df["close"].replace(0.0, 1e-12)).clip(0.0, 1.0)
+
+        # MA и объёмные MA как было
         self.df["ma_short"] = self.df["close"].rolling(self.ma_short_window).mean()
         self.df["ma_long"] = self.df["close"].rolling(self.ma_long_window).mean()
         self.df["vol_ma"] = self.df["volume"].rolling(self.vol_ma_window).mean()
 
-        self.df.dropna(inplace=True)
+        # RSI(14) центрированный в [-1,1] (слегка клипуем)
+        rsi = self._rsi(self.df["close"], self.rsi_window)
+        self.df["rsi_c"] = ((rsi - 50.0) / 50.0).clip(-1.5, 1.5)
+
+        # очистка: убираем NaN/Inf по ключевым колонкам
+        self.df.replace([np.inf, -np.inf], np.nan, inplace=True)
+        self.df.dropna(subset=["ma_short", "ma_long", "vol_ma", "atr", "atr_pct", "rsi_c"], inplace=True)
         self.df.reset_index(drop=True, inplace=True)
         self.n_bars = len(self.df)
 
@@ -146,6 +179,9 @@ class HourlyTradingEnv(gym.Env):
         ma_log = self._log_ratio(ma_short, ma_long)
         price_log = self._log_ratio(current_price, ma_short)
         vol_log = self._log_ratio(float(row["volume"]), vol_ma)
+        # NEW фичи
+        atr_pct = self._finite(float(row["atr_pct"]))
+        rsi_c = self._finite(float(row["rsi_c"]))
 
         net_exposure_ratio = net_notional / max(self.initial_balance, 1e-8)
         open_notional_ratio = total_notional / max(self.initial_balance, 1e-8)
@@ -156,6 +192,8 @@ class HourlyTradingEnv(gym.Env):
                 ma_log,
                 price_log,
                 vol_log,
+                atr_pct,
+                rsi_c,
                 net_exposure_ratio,
                 open_notional_ratio,
             ],
