@@ -35,7 +35,7 @@
   "min_notional_comment": "Минимальная сумма открытия ордера",
   "penalize_no_trade_steps": true,
   "penalize_no_trade_steps_comment": "Штрафовать за бездействие",
-  "no_trade_penalty": 0.1,
+  "no_trade_penalty": 100.0,
   "no_trade_penalty_comment": "Размер штрафа за бездействие",
   "consecutive_no_trade_allowed": 10,
   "consecutive_no_trade_allowed_comment": "Допустимое число шагов без действий",
