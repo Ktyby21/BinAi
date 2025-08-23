@@ -78,7 +78,6 @@ BEST_HPS = {
 }
 NET_ARCH_STR = str(config.get("policy_net_arch", "256-128"))
 POLICY_KWARGS = {"net_arch": _parse_arch(NET_ARCH_STR)}
-SEED = int(config.get("seed", 42))
 FORCE_NEW_MODEL = bool(config.get("force_new_model", True))  # True — безопасно при смене признаков
 
 PER_SYMBOL_TIMESTEPS = int(config.get("per_symbol_timesteps", config.get("learn_timesteps", 10_000)))
@@ -220,10 +219,6 @@ def make_env_from_df(df: pd.DataFrame, training: bool = True) -> VecNormalize:
     venv = DummyVecEnv([lambda: env])
     vec_env = VecNormalize(venv, norm_obs=True, norm_reward=True, clip_obs=1e6, clip_reward=1e6)
     vec_env.training = training
-    try:
-        vec_env.seed(SEED)
-    except Exception:
-        pass
     return vec_env
 
 
@@ -448,11 +443,10 @@ def main():
             env=vec_env,
             verbose=0,
             tensorboard_log=TB_DIR,
-            seed=SEED,
             policy_kwargs=POLICY_KWARGS,
             **BEST_HPS,
         )
-    print(f"[PPO] policy_net_arch={NET_ARCH_STR} | seed={SEED} | force_new={FORCE_NEW_MODEL}")
+    print(f"[PPO] policy_net_arch={NET_ARCH_STR} | force_new={FORCE_NEW_MODEL}")
     print(f"[PPO] HParams: {BEST_HPS}")
 
     # аккуратный логгер: CSV + TensorBoard

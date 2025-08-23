@@ -59,7 +59,6 @@
   "target_kl": 0.041564999642783235,
   "n_epochs": 10,
   "policy_net_arch": "256-128",
-  "seed": 42,
   "force_new_model": true,
   "per_symbol_timesteps": 10000,
   "checkpoint_freq": 20000,
