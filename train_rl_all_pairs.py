@@ -39,6 +39,14 @@ from stable_baselines3.common.logger import configure as sb3_configure
 
 from env.hourly_trading_env import HourlyTradingEnv  # твоя среда
 
+def _parse_arch(s: str):
+    """'256-128' -> dict(pi=[256,128], vf=[256,128]) для SB3 PPO."""
+    try:
+        parts = [int(x) for x in str(s).strip().split("-") if x]
+        return dict(pi=parts, vf=parts)
+    except Exception:
+        return dict(pi=[256, 128], vf=[256, 128])
+
 
 # ----------------- CONFIG -----------------
 with open("config.json", "r") as f:
@@ -53,6 +61,25 @@ VECNORM_PATH = os.path.join(ARTIFACTS_DIR, "vecnorm.pkl")
 
 for d in (LOG_DIR, TB_DIR, CHECKPOINT_DIR):
     os.makedirs(d, exist_ok=True)
+
+# ---------- PPO hyperparams (из config.json) ----------
+BEST_HPS = {
+    "learning_rate": float(config.get("learning_rate", 1.1736906626201254e-05)),
+    "gamma": float(config.get("gamma", 0.9797937313436991)),
+    "batch_size": int(config.get("batch_size", 512)),
+    "n_steps": int(config.get("n_steps", 512)),
+    "ent_coef": float(config.get("ent_coef", 0.023636801086752424)),
+    "clip_range": float(config.get("clip_range", 0.29121737990065244)),
+    "gae_lambda": float(config.get("gae_lambda", 0.828550617451298)),
+    "vf_coef": float(config.get("vf_coef", 0.7392096696563757)),
+    "max_grad_norm": float(config.get("max_grad_norm", 0.7781116322105397)),
+    "target_kl": float(config.get("target_kl", 0.041564999642783235)),
+    "n_epochs": int(config.get("n_epochs", 10)),
+}
+NET_ARCH_STR = str(config.get("policy_net_arch", "256-128"))
+POLICY_KWARGS = {"net_arch": _parse_arch(NET_ARCH_STR)}
+SEED = int(config.get("seed", 42))
+FORCE_NEW_MODEL = bool(config.get("force_new_model", True))  # True — безопасно при смене признаков
 
 PER_SYMBOL_TIMESTEPS = int(config.get("per_symbol_timesteps", config.get("learn_timesteps", 10_000)))
 SLEEP_BETWEEN = float(config.get("sleep_between_symbols_sec", 2))
@@ -193,6 +220,10 @@ def make_env_from_df(df: pd.DataFrame, training: bool = True) -> VecNormalize:
     venv = DummyVecEnv([lambda: env])
     vec_env = VecNormalize(venv, norm_obs=True, norm_reward=True, clip_obs=1e6, clip_reward=1e6)
     vec_env.training = training
+    try:
+        vec_env.seed(SEED)
+    except Exception:
+        pass
     return vec_env
 
 
@@ -395,17 +426,34 @@ def main():
     # первая пара — чтобы инициализировать модель/логгер
     first_df = load_one_symbol_csv(CSV_PATH, symbols[0])
     vec_env = make_env_from_df(first_df, training=True)
-    if os.path.isfile(VECNORM_PATH):
-        vec_env = VecNormalize.load(VECNORM_PATH, vec_env)
-        vec_env.training = True
+    if os.path.isfile(VECNORM_PATH) and not FORCE_NEW_MODEL:
+        try:
+            vec_env = VecNormalize.load(VECNORM_PATH, vec_env)
+            vec_env.training = True
+        except Exception as e:
+            print(f"Не удалось загрузить VecNormalize ({e}). Стартуем с нуля.")
 
     # создаём/грузим модель, без спама в консоль
-    if os.path.isfile(MODEL_PATH):
-        print("Загружаю сохранённую модель…")
-        model = PPO.load(MODEL_PATH, env=vec_env, verbose=0, tensorboard_log=TB_DIR)
-    else:
-        print("Создаю новую модель…")
-        model = PPO(policy="MlpPolicy", env=vec_env, verbose=0, tensorboard_log=TB_DIR)
+    model = None
+    if os.path.isfile(MODEL_PATH) and not FORCE_NEW_MODEL:
+        try:
+            print("Загружаю сохранённую модель…")
+            model = PPO.load(MODEL_PATH, env=vec_env, verbose=0, tensorboard_log=TB_DIR)
+        except Exception as e:
+            print(f"Не удалось загрузить модель ({e}). Создаю новую…")
+    if model is None:
+        print("Создаю новую модель (с лучшими гиперпараметрами)…")
+        model = PPO(
+            policy="MlpPolicy",
+            env=vec_env,
+            verbose=0,
+            tensorboard_log=TB_DIR,
+            seed=SEED,
+            policy_kwargs=POLICY_KWARGS,
+            **BEST_HPS,
+        )
+    print(f"[PPO] policy_net_arch={NET_ARCH_STR} | seed={SEED} | force_new={FORCE_NEW_MODEL}")
+    print(f"[PPO] HParams: {BEST_HPS}")
 
     # аккуратный логгер: CSV + TensorBoard
     run_name = time.strftime("%Y%m%d-%H%M%S")
