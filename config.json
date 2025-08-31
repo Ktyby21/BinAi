@@ -41,7 +41,7 @@
   "penalize_no_trade_steps_comment": "Штрафовать за бездействие",
   "no_trade_penalty": 100.0,
   "no_trade_penalty_comment": "Размер штрафа за бездействие",
-  "consecutive_no_trade_allowed": 10,
+  "consecutive_no_trade_allowed": 20,
   "consecutive_no_trade_allowed_comment": "Допустимое число шагов без действий",
   "train_timesteps": 500000,
   "train_timesteps_comment": "Число шагов обучения",

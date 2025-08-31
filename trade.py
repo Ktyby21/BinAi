@@ -23,6 +23,8 @@ class Trade:
         self.take_profit = take_profit
 
         self.notional = notional
+        # Store initial notional to compute trade returns later
+        self.initial_notional = notional
         self.open_fee = open_fee
 
         self.exit_bar: Optional[int] = None

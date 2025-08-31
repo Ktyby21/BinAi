@@ -421,6 +421,11 @@ class HourlyTradingEnv(gym.Env):
         else:
             self.consecutive_no_trade_steps = 0
 
+        # Trades that got closed on this bar (before incrementing bar index)
+        recently_closed_trades = [
+            t for t in self.trade_log if t.closed and t.exit_bar == bar_idx
+        ]
+
         self.current_bar += 1
 
         if self.max_bars is not None:
@@ -459,15 +464,33 @@ class HourlyTradingEnv(gym.Env):
             # поэтому equity совпадает с текущим балансом
             current_equity = self.balance
 
-        # ===== Reward: лог-доходность портфеля (equity учитывает стоимость открытых позиций)
+            # include trades closed during forced liquidation
+            recently_closed_trades.extend(
+                [t for t in self.trade_log if t.closed and t.exit_bar == self.current_bar]
+            )
+
+        # ===== Reward: linear equity change (ROI)
         if not hasattr(self, "prev_equity"):
             self.prev_equity = current_equity
-        delta = np.log((current_equity + 1e-6) / (self.prev_equity + 1e-6))
-        reward = float(delta * 100.0 * self.reward_scaling)
+        profit_change = current_equity - self.prev_equity
+        reward = (
+            (profit_change / max(self.initial_balance, 1e-8))
+            * 100.0
+            * self.reward_scaling
+        )
         self.prev_equity = current_equity
 
+        # Apply inactivity penalty
         self.penalty_total += extra_penalty
         reward -= (extra_penalty / max(self.initial_balance, 1e-8)) * self.reward_scaling
+
+        # Bonus/penalty for closed trades
+        for trade in recently_closed_trades:
+            trade_return = trade.pnl / max(getattr(trade, "initial_notional", 1e-8), 1e-8)
+            if trade_return > 0.005:
+                reward += 0.5 * trade_return * self.reward_scaling
+            elif trade_return < 0.0:
+                reward -= 1.0 * abs(trade_return) * self.reward_scaling
 
         if terminated or truncated:
             gross_pnl = float(sum(t.pnl for t in self.trade_log))
