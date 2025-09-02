@@ -191,7 +191,7 @@ def make_env_from_df(df: pd.DataFrame, training: bool = True) -> VecNormalize:
     )
     env = Monitor(env)
     venv = DummyVecEnv([lambda: env])
-    vec_env = VecNormalize(venv, norm_obs=True, norm_reward=True, clip_obs=1e6, clip_reward=1e6)
+    vec_env = VecNormalize(venv, norm_obs=True, norm_reward=False, clip_obs=1e6, clip_reward=1e6)
     vec_env.training = training
     return vec_env
 

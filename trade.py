@@ -27,6 +27,9 @@ class Trade:
         self.initial_notional = notional
         self.open_fee = open_fee
 
+        # Flag to mark if trade was closed automatically by SL/TP
+        self.exited_by_sl_tp = False
+
         self.exit_bar: Optional[int] = None
         self.exit_price: Optional[float] = None
         self.pnl: float = 0.0

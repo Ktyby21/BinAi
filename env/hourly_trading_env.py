@@ -45,6 +45,19 @@ class HourlyTradingEnv(gym.Env):
         risk_fraction: float = 0.01,
         max_alloc_per_trade: float = 0.3,
         min_notional: float = 1.0,
+        # Trading behaviour controls
+        max_open_trades: int = 1,
+        min_hold_bars: int = 8,
+        cooldown_bars_after_close: int = 4,
+        open_threshold: float = 0.6,
+        close_threshold: float = 0.7,
+        per_close_penalty: float = 0.001,
+        target_closes_per_episode: int = 60,
+        excess_close_penalty: float = 0.002,
+        early_close_penalty: float = 0.001,
+        small_return_threshold: float = 0.005,
+        close_bonus_coef: float = 0.5,
+        close_loss_coef: float = 1.0,
         # NEW:
         atr_window: int = 14,
         rsi_window: int = 14,
@@ -69,6 +82,20 @@ class HourlyTradingEnv(gym.Env):
         self.max_alloc_per_trade = max_alloc_per_trade
         self.min_notional = min_notional
 
+        # Behaviour parameters
+        self.max_open_trades = max_open_trades
+        self.min_hold_bars = min_hold_bars
+        self.cooldown_bars_after_close = cooldown_bars_after_close
+        self.open_threshold = open_threshold
+        self.close_threshold = close_threshold
+        self.per_close_penalty = per_close_penalty
+        self.target_closes_per_episode = target_closes_per_episode
+        self.excess_close_penalty = excess_close_penalty
+        self.early_close_penalty = early_close_penalty
+        self.small_return_threshold = small_return_threshold
+        self.close_bonus_coef = close_bonus_coef
+        self.close_loss_coef = close_loss_coef
+
         # NEW:
         self.atr_window = atr_window
         self.rsi_window = rsi_window
@@ -82,6 +109,9 @@ class HourlyTradingEnv(gym.Env):
         self.open_trades: List[Trade] = []
         self.trade_log: List[Trade] = []
         self.consecutive_no_trade_steps = 0
+        self.last_close_bar = -10**9
+        self.closes_count = 0
+        self.bars_with_position = 0
 
         # Observation:
         # [equity_log, ma_log, price_log, vol_log, atr_pct, rsi_c,
@@ -243,6 +273,9 @@ class HourlyTradingEnv(gym.Env):
         self.balance = self.initial_balance
         self.prev_equity = self.initial_balance
         self.penalty_total = 0.0
+        self.last_close_bar = -10**9
+        self.closes_count = 0
+        self.bars_with_position = 0
 
         min_start = 0
 
@@ -285,53 +318,49 @@ class HourlyTradingEnv(gym.Env):
                 continue
             if trade.direction == "long":
                 if l <= trade.stop_loss:
+                    trade.exited_by_sl_tp = True
                     self._settle_trade(
                         trade,
                         trade.stop_loss * (1.0 - self.slippage_rate),
                         bar_idx,
                     )
                     any_settlement = True
+                    self.last_close_bar = bar_idx
                 elif h >= trade.take_profit:
+                    trade.exited_by_sl_tp = True
                     self._settle_trade(
                         trade,
                         trade.take_profit * (1.0 - self.slippage_rate),
                         bar_idx,
                     )
                     any_settlement = True
+                    self.last_close_bar = bar_idx
             else:
                 if h >= trade.stop_loss:
+                    trade.exited_by_sl_tp = True
                     self._settle_trade(
                         trade,
                         trade.stop_loss * (1.0 + self.slippage_rate),
                         bar_idx,
                     )
                     any_settlement = True
+                    self.last_close_bar = bar_idx
                 elif l <= trade.take_profit:
+                    trade.exited_by_sl_tp = True
                     self._settle_trade(
                         trade,
                         trade.take_profit * (1.0 + self.slippage_rate),
                         bar_idx,
                     )
                     any_settlement = True
-
-        # ===== 2) Partial close =====
-        if close_fraction > 1e-8:
-            for trade in self.open_trades:
-                if trade.closed:
-                    continue
-                px = (
-                    c * (1.0 - self.slippage_rate)
-                    if trade.direction == "long"
-                    else c * (1.0 + self.slippage_rate)
-                )
-                self._settle_trade(trade, px, bar_idx, proportion=close_fraction)
-                any_settlement = True
+                    self.last_close_bar = bar_idx
 
         # Уберём закрытые из списка активных
         if any_settlement:
             self.open_trades = [t for t in self.open_trades if not t.closed]
 
-        # ===== 3) Possibly open trades (risk-based sizing) =====
+        # ===== 2) Manual open/close (one action per bar) =====
+        did_action = False
         max_alloc = float(self.max_alloc_per_trade)
 
         # Текущая equity (для риска)
@@ -406,20 +435,48 @@ class HourlyTradingEnv(gym.Env):
                 self.trade_log.append(new_trade)
 
         net = open_long_frac - open_short_frac
-        if abs(net) > 1e-3:
+        if (
+            not did_action
+            and abs(net) > self.open_threshold
+            and sum(1 for t in self.open_trades if not t.closed) < self.max_open_trades
+            and (bar_idx - self.last_close_bar) >= self.cooldown_bars_after_close
+        ):
             (open_long if net > 0 else open_short)(abs(net))
+            did_action = True
 
-        # Штраф за отсутствие АКТИВНЫХ позиций
+        if (not did_action) and close_fraction > self.close_threshold:
+            for trade in self.open_trades:
+                if trade.closed:
+                    continue
+                if (bar_idx - trade.entry_bar) < self.min_hold_bars:
+                    continue
+                px = (
+                    c * (1.0 - self.slippage_rate)
+                    if trade.direction == "long"
+                    else c * (1.0 + self.slippage_rate)
+                )
+                self._settle_trade(trade, px, bar_idx, proportion=1.0)
+                any_settlement = True
+                did_action = True
+                self.last_close_bar = bar_idx
+                break
+
+        if any_settlement:
+            self.open_trades = [t for t in self.open_trades if not t.closed]
+
+        # Штраф за отсутствие активных позиций
         extra_penalty = 0.0
         active_open = sum(1 for t in self.open_trades if not t.closed)
         if active_open == 0:
             self.consecutive_no_trade_steps += 1
-            if self.penalize_no_trade_steps:
-                extra_penalty += self.no_trade_penalty
-                if self.consecutive_no_trade_steps > self.consecutive_no_trade_allowed:
-                    extra_penalty += self.no_trade_penalty
+            if (
+                self.penalize_no_trade_steps
+                and self.consecutive_no_trade_steps > self.consecutive_no_trade_allowed
+            ):
+                extra_penalty = self.no_trade_penalty
         else:
             self.consecutive_no_trade_steps = 0
+            self.bars_with_position += 1
 
         # Trades that got closed on this bar (before incrementing bar index)
         recently_closed_trades = [
@@ -457,14 +514,19 @@ class HourlyTradingEnv(gym.Env):
             for trade in self.open_trades:
                 if trade.closed:
                     continue
-                px = c * (1.0 - self.slippage_rate) if trade.direction == "long" else c * (1.0 + self.slippage_rate)
+                trade.exited_by_sl_tp = True
+                px = (
+                    c * (1.0 - self.slippage_rate)
+                    if trade.direction == "long"
+                    else c * (1.0 + self.slippage_rate)
+                )
                 forced_close_pnl += self._settle_trade(trade, px, self.current_bar)
+                self.last_close_bar = self.current_bar
             info["forced_close_pnl"] = forced_close_pnl
             # После принудительного закрытия все позиции закрыты,
             # поэтому equity совпадает с текущим балансом
             current_equity = self.balance
 
-            # include trades closed during forced liquidation
             recently_closed_trades.extend(
                 [t for t in self.trade_log if t.closed and t.exit_bar == self.current_bar]
             )
@@ -474,9 +536,7 @@ class HourlyTradingEnv(gym.Env):
             self.prev_equity = current_equity
         profit_change = current_equity - self.prev_equity
         reward = (
-            (profit_change / max(self.initial_balance, 1e-8))
-            * 100.0
-            * self.reward_scaling
+            (profit_change / max(self.initial_balance, 1e-8)) * 100.0 * self.reward_scaling
         )
         self.prev_equity = current_equity
 
@@ -484,25 +544,68 @@ class HourlyTradingEnv(gym.Env):
         self.penalty_total += extra_penalty
         reward -= (extra_penalty / max(self.initial_balance, 1e-8)) * self.reward_scaling
 
-        # Bonus/penalty for closed trades
+        # Bonus/penalty for closed trades and activity penalties
+        self.closes_count += len(recently_closed_trades)
         for trade in recently_closed_trades:
-            trade_return = trade.pnl / max(getattr(trade, "initial_notional", 1e-8), 1e-8)
-            if trade_return > 0.005:
-                reward += 0.5 * trade_return * self.reward_scaling
+            denom = max(getattr(trade, "initial_notional", 1e-8), 1e-8)
+            trade_return = trade.pnl / denom
+            if trade_return > self.small_return_threshold:
+                reward += self.close_bonus_coef * trade_return * self.reward_scaling
             elif trade_return < 0.0:
-                reward -= 1.0 * abs(trade_return) * self.reward_scaling
+                reward -= self.close_loss_coef * abs(trade_return) * self.reward_scaling
+
+            reward -= self.per_close_penalty * self.reward_scaling
+            if self.closes_count > self.target_closes_per_episode:
+                reward -= self.excess_close_penalty * self.reward_scaling
+
+            if (
+                trade.exit_bar is not None
+                and trade.entry_bar is not None
+                and (trade.exit_bar - trade.entry_bar) < self.min_hold_bars
+                and not getattr(trade, "exited_by_sl_tp", False)
+            ):
+                reward -= self.early_close_penalty * self.reward_scaling
 
         if terminated or truncated:
             gross_pnl = float(sum(t.pnl for t in self.trade_log))
             net_pnl = gross_pnl - self.penalty_total
+            closed_trades = [t for t in self.trade_log if t.closed]
+            trades_closed = len(closed_trades)
+            win_count = sum(1 for t in closed_trades if t.pnl > 0.0)
+            avg_return = (
+                np.mean([
+                    t.pnl / max(getattr(t, "initial_notional", 1e-8), 1e-8)
+                    for t in closed_trades
+                ])
+                if trades_closed > 0
+                else 0.0
+            )
+            avg_bars = (
+                np.mean([
+                    (t.exit_bar - t.entry_bar)
+                    for t in closed_trades
+                    if t.exit_bar is not None and t.entry_bar is not None
+                ])
+                if trades_closed > 0
+                else 0.0
+            )
+            episode_bars = max(self.current_bar - self.start_bar, 1)
+            trades_per_day = trades_closed * 288.0 / episode_bars
+            time_in_market_share = self.bars_with_position / episode_bars
+
             info["episode_summary"] = {
                 "final_balance": self.balance,
                 "trades_opened": len(self.trade_log),
-                "trades_closed": sum(1 for t in self.trade_log if t.closed),
+                "trades_closed": trades_closed,
                 "gross_pnl": gross_pnl,
                 "net_pnl": net_pnl,
                 "penalty_total": self.penalty_total,
                 "forced_close_pnl": info.get("forced_close_pnl", 0.0),
+                "win_rate": win_count / trades_closed if trades_closed > 0 else 0.0,
+                "avg_trade_return": avg_return,
+                "avg_trade_bars": avg_bars,
+                "trades_per_day": trades_per_day,
+                "time_in_market_share": time_in_market_share,
             }
 
         return self._get_obs(), reward, terminated, truncated, info
