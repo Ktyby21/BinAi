@@ -23,7 +23,12 @@ class Trade:
         self.take_profit = take_profit
 
         self.notional = notional
+        # Store initial notional to compute trade returns later
+        self.initial_notional = notional
         self.open_fee = open_fee
+
+        # Flag to mark if trade was closed automatically by SL/TP
+        self.exited_by_sl_tp = False
 
         self.exit_bar: Optional[int] = None
         self.exit_price: Optional[float] = None
